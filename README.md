@@ -1,7 +1,6 @@
 # bgrun
 
 [![CI](https://github.com/bethropolis/bgrun/actions/workflows/release.yml/badge.svg)](https://github.com/bethropolis/bgrun/actions/workflows/release.yml)
-[![Crates.io](https://img.shields.io/crates/v/bgrun-cli.svg)](https://crates.io/crates/bgrun-cli)
 [![License: MIT](https://img.shields.io/github/license/bethropolis/bgrun)](LICENSE)
 
 A background process runner for AI agents and automation workflows. Start processes, check status, tail logs, and kill them over a Unix socket with JSON output. The daemon auto-starts on first CLI use.
