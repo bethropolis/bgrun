@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/bgrun-proto",
+    "crates/bgrun-core",
+    "crates/bgrun-daemon",
+    "crates/bgrun-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.38", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+nix = { version = "0.29", features = ["process", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "5.0"
+uuid = { version = "1.10", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+toml = "0.8"
+portable-pty = "0.8"
+sysinfo = "0.31"
+once_cell = "1.19"

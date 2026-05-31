@@ -1,0 +1,19 @@
+[package]
+name = "bgrun-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bgrun"
+path = "src/main.rs"
+
+[dependencies]
+bgrun-proto = { path = "../bgrun-proto" }
+bgrun-core = { path = "../bgrun-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+is-terminal = "0.4"
