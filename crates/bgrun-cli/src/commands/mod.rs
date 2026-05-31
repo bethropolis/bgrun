@@ -4,6 +4,7 @@ pub mod list;
 pub mod run;
 pub mod run_group;
 pub mod send;
+pub mod skill;
 pub mod stats;
 pub mod status;
 pub mod tail;

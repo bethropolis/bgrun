@@ -1,14 +1,25 @@
 # bgrun
 
-A background process runner for AI agents and automation workflows. Start processes, check their status, tail logs, and kill them — all over a Unix socket with JSON output.
+[![CI](https://github.com/bethropolis/bgrun/actions/workflows/release.yml/badge.svg)](https://github.com/bethropolis/bgrun/actions/workflows/release.yml)
+[![Crates.io](https://img.shields.io/crates/v/bgrun-cli.svg)](https://crates.io/crates/bgrun-cli)
+[![License: MIT](https://img.shields.io/github/license/bethropolis/bgrun)](LICENSE)
 
-## Install
+A background process runner for AI agents and automation workflows. Start processes, check status, tail logs, and kill them over a Unix socket with JSON output. The daemon auto-starts on first CLI use.
+
+## Install (Linux, from source)
 
 ```bash
-cargo build --release
+./install.sh
 ```
 
-Binaries: `bgrun` (CLI) and `bgrun-daemon` (auto-started by the CLI).
+Requires the Rust toolchain (`cargo`). This builds from a local clone and installs
+`bgrun` (CLI) and `bgrun-daemon` (auto-started by the CLI) to `~/.local/bin`.
+
+Optional: install the OpenCode skill bundle from `docs/bgrun/`:
+
+```bash
+./install.sh --install-skill
+```
 
 ## Quick start
 
@@ -38,6 +49,7 @@ bgrun kill abc123
 | `bgrun send <id> <data>` | Write to stdin |
 | `bgrun stats <id>` | Show CPU/RSS/uptime |
 | `bgrun kill <id> [--workspace <ws>]` | Terminate job(s) |
+| `bgrun skill install <dir>` | Install embedded skill bundle |
 
 ## Docs
 
@@ -46,6 +58,8 @@ bgrun kill abc123
 - [Architecture](docs/architecture.md) — daemon, protocol, readiness system
 
 ## Crate layout
+
+Workspace crates:
 
 | Crate | Role |
 |-------|------|

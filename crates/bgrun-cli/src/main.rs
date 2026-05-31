@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 mod autostart;
 mod client;
@@ -143,6 +144,21 @@ enum Commands {
         /// Job ID
         id: String,
     },
+
+    /// Manage embedded skills
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommands {
+    /// Install the embedded skill to a target directory
+    Install {
+        /// Target directory (e.g. ~/.config/opencode/skills/bgrun)
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -207,6 +223,11 @@ async fn main() -> Result<()> {
         Commands::Stats { id } => {
             commands::stats::stats(id).await?;
         }
+        Commands::Skill { command } => match command {
+            SkillCommands::Install { path } => {
+                commands::skill::install(path)?;
+            }
+        },
     }
 
     Ok(())

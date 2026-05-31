@@ -1,6 +1,6 @@
 # Command Reference
 
-bgrun has 11 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
+bgrun has 12 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
 
 The daemon auto-starts on the first CLI invocation. You don't need to manually start it.
 
@@ -343,6 +343,28 @@ bgrun stats server
 | `cpu_pct` | CPU usage percentage (across all cores) |
 | `rss_mb` | Resident memory in MB |
 | `uptime_secs` | Process uptime in seconds |
+
+---
+
+## skill
+
+Install the embedded skill bundle to a target directory.
+
+```
+bgrun skill install <DIR>
+```
+
+**Examples**
+
+```bash
+bgrun skill install ~/.config/opencode/skills/bgrun
+```
+
+**Output**
+
+```
+Installed skill to /home/user/.config/opencode/skills/bgrun/SKILL.md
+```
 
 ---
 
