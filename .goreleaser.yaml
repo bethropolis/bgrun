@@ -17,8 +17,6 @@ builds:
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
 
   - id: bgrun-daemon
     builder: rust
@@ -29,8 +27,6 @@ builds:
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
 
 archives:
   - id: bgrun
@@ -39,10 +35,7 @@ archives:
       - bgrun-daemon
     formats:
       - tar.gz
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_
-      {{- if eq .Os "darwin" }}macOS{{ else }}{{ .Os }}{{ end }}_
-      {{- .Arch }}
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - docs/*
