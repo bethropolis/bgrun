@@ -183,6 +183,8 @@ async fn dispatch(
             let start = tokio::time::Instant::now();
             let timeout = std::time::Duration::from_millis(timeout_ms);
             let mut ready = false;
+            let mut exit_code = None;
+            let mut state = None;
 
             loop {
                 if start.elapsed() >= timeout {
@@ -191,8 +193,24 @@ async fn dispatch(
                 {
                     let store_ref = store.lock().await;
                     match store_ref.get(&id) {
-                        Some(job) if job.state == bgrun_proto::JobState::Ready => {
+                        Some(job) if job.state == bgrun_proto::JobState::Ready
+                            || job.ready_at.is_some() =>
+                        {
                             ready = true;
+                            exit_code = job.exit_code;
+                            state = Some(job.state.to_string());
+                            break;
+                        }
+                        Some(job)
+                            if matches!(
+                                job.state,
+                                bgrun_proto::JobState::Exited
+                                    | bgrun_proto::JobState::Crashed
+                                    | bgrun_proto::JobState::Killed
+                            ) =>
+                        {
+                            exit_code = job.exit_code;
+                            state = Some(job.state.to_string());
                             break;
                         }
                         Some(_) => {}
@@ -206,7 +224,12 @@ async fn dispatch(
             }
 
             let elapsed_ms = start.elapsed().as_millis() as u64;
-            let result = WaitResult { ready, elapsed_ms };
+            let result = WaitResult {
+                ready,
+                elapsed_ms,
+                exit_code,
+                state,
+            };
             match serde_json::to_value(result) {
                 Ok(val) => Response::ok(req_id.clone(), val),
                 Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
@@ -251,19 +274,35 @@ async fn dispatch(
                 }
             }
         }
-        Command::Diff { id } => {
+        Command::Diff { id, lines } => {
             // Read current cursor from store
             let cursor = {
                 let store_ref = store.lock().await;
                 store_ref.get(&id).map_or(0, |job| job.last_diff_cursor)
             };
             match bgrun_daemon::log_manager::diff_since(&id, cursor).await {
-                Ok((lines, new_cursor)) => {
+                Ok((mut log_lines, new_cursor)) => {
+                    // Truncate to last N lines if requested; only advance
+                    // cursor by the number of lines actually returned so
+                    // subsequent calls resume from where we left off.
+                    let actual_new = if let Some(max_lines) = lines {
+                        if log_lines.len() > max_lines {
+                            let keep = log_lines.split_off(log_lines.len() - max_lines);
+                            let count = keep.len() as u64;
+                            log_lines = keep;
+                            cursor + count
+                        } else {
+                            new_cursor
+                        }
+                    } else {
+                        new_cursor
+                    };
+
                     // Update cursor in store and persist
                     {
                         let mut store_ref = store.lock().await;
                         if let Some(job) = store_ref.get_mut(&id) {
-                            job.last_diff_cursor = new_cursor;
+                            job.last_diff_cursor = actual_new;
                         }
                     }
                     // Persist updated status
@@ -274,14 +313,12 @@ async fn dispatch(
                         }
                     }
                     let result = serde_json::json!({
-                        "lines": lines,
-                        "cursor": new_cursor,
+                        "lines": log_lines,
+                        "cursor": actual_new,
                     });
                     match serde_json::to_value(result) {
                         Ok(val) => Response::ok(req_id.clone(), val),
-                        Err(e) => {
-                            Response::err(req_id.clone(), format!("serialization error: {}", e))
-                        }
+                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
                     }
                 }
                 Err(e) => Response::err(req_id.clone(), e.to_string()),

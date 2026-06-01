@@ -10,6 +10,7 @@ use crate::output::{output_mode, print_job};
 /// Optional flags for the run command.
 pub struct RunFlags {
     pub ready_when: Option<String>,
+    pub ready_when_regex: Option<String>,
     pub ready_when_port: Option<u16>,
     pub ready_when_url: Option<String>,
     pub ready_when_file: Option<String>,
@@ -35,9 +36,13 @@ pub async fn run(
             cmd = resolved.cmd;
             name = name.or(resolved.name);
             workspace = workspace.or(resolved.workspace);
-            if flags.ready_when.is_none() && flags.ready_when_port.is_none() {
+            if flags.ready_when.is_none() && flags.ready_when_regex.is_none()
+                && flags.ready_when_port.is_none() && flags.ready_when_url.is_none()
+                && flags.ready_when_file.is_none()
+            {
                 match resolved.readiness {
                     Some(ReadinessStrategy::LogPattern(p)) => flags.ready_when = Some(p),
+                    Some(ReadinessStrategy::LogPatternRegex(p)) => flags.ready_when_regex = Some(p),
                     Some(ReadinessStrategy::TcpPort(p)) => flags.ready_when_port = Some(p),
                     Some(ReadinessStrategy::HttpPoll(u)) => flags.ready_when_url = Some(u),
                     Some(ReadinessStrategy::FileExists(f)) => flags.ready_when_file = Some(f),
@@ -52,8 +57,9 @@ pub async fn run(
 
     // Resolve readiness strategy from flags (first match wins)
     let readiness = flags
-        .ready_when
-        .map(ReadinessStrategy::LogPattern)
+        .ready_when_regex
+        .map(ReadinessStrategy::LogPatternRegex)
+        .or_else(|| flags.ready_when.map(ReadinessStrategy::LogPattern))
         .or_else(|| flags.ready_when_port.map(ReadinessStrategy::TcpPort))
         .or_else(|| flags.ready_when_url.map(ReadinessStrategy::HttpPoll))
         .or_else(|| flags.ready_when_file.map(ReadinessStrategy::FileExists));
@@ -81,6 +87,7 @@ pub async fn run(
         max_runtime_ms: None,
         env: HashMap::new(),
         after: flags.after,
+        cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
     };
 
     let response = client.send::<JobRecord>(Command::Run(args)).await?;

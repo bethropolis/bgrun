@@ -88,6 +88,8 @@ pub struct LogLine {
 pub struct WaitResult {
     pub ready: bool,
     pub elapsed_ms: u64,
+    pub exit_code: Option<i32>,
+    pub state: Option<String>,
 }
 
 /// Digest summary of a job's log.

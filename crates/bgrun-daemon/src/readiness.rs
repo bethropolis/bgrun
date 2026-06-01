@@ -77,6 +77,63 @@ impl ReadinessChecker for LogPatternChecker {
     }
 }
 
+/// Checks if a log file contains a regex pattern.
+///
+/// Tracks the byte offset of the last read so each check only scans new bytes.
+pub struct RegexPatternChecker {
+    path: PathBuf,
+    pattern: regex::Regex,
+    offset: Arc<Mutex<u64>>,
+}
+
+impl RegexPatternChecker {
+    /// Creates a checker that scans the log file for the given regex pattern.
+    pub fn new(log_path: PathBuf, pattern: regex::Regex) -> Self {
+        RegexPatternChecker {
+            path: log_path,
+            pattern,
+            offset: Arc::new(Mutex::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl ReadinessChecker for RegexPatternChecker {
+    async fn check(&self) -> bool {
+        let mut file = match tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .await
+        {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+
+        let mut offset = self.offset.lock().await;
+        let start = *offset;
+
+        if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return false;
+        }
+
+        let mut buf = Vec::new();
+        if file.read_to_end(&mut buf).await.is_err() {
+            return false;
+        }
+
+        let new_bytes = String::from_utf8_lossy(&buf);
+        let found = self.pattern.is_match(&new_bytes);
+
+        *offset = start + buf.len() as u64;
+
+        found
+    }
+
+    fn description(&self) -> String {
+        format!("log regex '{}'", self.pattern.as_str())
+    }
+}
+
 /// Checks if a TCP port is connectable (async).
 pub struct TcpPortChecker {
     port: u16,
@@ -165,6 +222,21 @@ pub fn build_checker(
             job_dir.join("stdout.log"),
             pattern.clone(),
         )),
+        ReadinessStrategy::LogPatternRegex(pattern) => {
+            match regex::Regex::new(pattern) {
+                Ok(re) => Box::new(RegexPatternChecker::new(
+                    job_dir.join("stdout.log"),
+                    re,
+                )),
+                Err(e) => {
+                    warn!(error = %e, "invalid readiness regex pattern, falling back to substring match");
+                    Box::new(LogPatternChecker::new(
+                        job_dir.join("stdout.log"),
+                        pattern.clone(),
+                    ))
+                }
+            }
+        }
         ReadinessStrategy::TcpPort(port) => Box::new(TcpPortChecker::new(*port)),
         ReadinessStrategy::HttpPoll(url) => Box::new(HttpPollChecker::new(url.clone())),
         ReadinessStrategy::FileExists(path) => {
