@@ -40,6 +40,25 @@ archives:
       - README.md
       - docs/*
 
+homebrew_casks:
+  - name: bgrun
+    repository:
+      owner: bethropolis
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    ids:
+      - bgrun
+    binaries:
+      - bgrun
+      - bgrun-daemon
+    homepage: "https://github.com/bethropolis/bgrun"
+    description: "Background process manager for development workflows"
+    license: "MIT"
+    url:
+      verified: "github.com/bethropolis/bgrun"
+    commit_msg_template: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+
 checksum:
   name_template: checksums.txt
 
