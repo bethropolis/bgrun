@@ -5,7 +5,16 @@
 
 A background process runner for AI agents and automation workflows. Start processes, check status, tail logs, and kill them over a Unix socket with JSON output. The daemon auto-starts on first CLI use.
 
-## Install (Linux, from source)
+## Install
+
+### Homebrew (Linux)
+
+```bash
+brew tap bethropolis/tap
+brew install --cask bethropolis/tap/bgrun
+```
+
+### From source (Linux)
 
 ```bash
 ./install.sh

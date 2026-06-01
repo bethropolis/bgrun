@@ -30,6 +30,8 @@ impl std::fmt::Display for JobState {
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessStrategy {
     LogPattern(String),
+    #[serde(rename = "log_pattern_regex")]
+    LogPatternRegex(String),
     HttpPoll(String),
     TcpPort(u16),
     FileExists(String),
@@ -52,7 +54,15 @@ mod tests {
         let json = serde_json::to_string(&strategy).expect("strategy should serialize");
         let parsed: ReadinessStrategy =
             serde_json::from_str(&json).expect("strategy should deserialize");
+        assert_eq!(strategy, parsed);
+    }
 
+    #[test]
+    fn test_readiness_log_pattern_regex_roundtrip() {
+        let strategy = ReadinessStrategy::LogPatternRegex(r"^Hello \d+$".into());
+        let json = serde_json::to_string(&strategy).unwrap();
+        assert!(json.contains("log_pattern_regex"));
+        let parsed: ReadinessStrategy = serde_json::from_str(&json).unwrap();
         assert_eq!(strategy, parsed);
     }
 }

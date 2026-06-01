@@ -235,10 +235,15 @@ bgrun send <id> "<data>"
 Delivers data to the job's stdin. Useful for interactive programs that prompt
 for input.
 
+**Important:** `bgrun send` does **not** add a trailing newline. For line-buffered
+programs (e.g. interactive shells), include `\n` explicitly:
+
 ```bash
 bgrun send b3f7a21c "yes\n"
-bgrun send b3f7a21c "q\n"
+bgrun send b3f7a21c $'q\n'
 ```
+
+Works with both piped and `--pty` jobs.
 
 **JSON output shape:**
 ```json

@@ -4,6 +4,23 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::state;
 
+/// Parses a log line, extracting the optional ISO 8601 timestamp prefix.
+///
+/// Expected format: `[2026-06-01T10:32:00.123Z] content here`
+/// Lines without a valid timestamp prefix return `(None, raw_line)`.
+fn parse_line(raw: &str) -> (Option<String>, String) {
+    if let Some(stripped) = raw.strip_prefix('[') {
+        if let Some(end) = stripped.find("] ") {
+            let ts = &stripped[..end];
+            // Basic validation: contains T and ends with Z or offset digit
+            if ts.contains('T') {
+                return (Some(ts.to_string()), stripped[end + 2..].to_string());
+            }
+        }
+    }
+    (None, raw.to_string())
+}
+
 /// Returns the last `n` lines from the job's stdout.log.
 ///
 /// First pass counts lines and tracks newline byte offsets as a ring buffer of N+1.
@@ -62,10 +79,13 @@ pub async fn tail_lines(id: &str, n: usize) -> Result<Vec<LogLine>> {
     let result: Vec<LogLine> = lines
         .iter()
         .enumerate()
-        .map(|(i, line)| LogLine {
-            line_number: line_offset + i as u64,
-            content: line.to_string(),
-            timestamp: None,
+        .map(|(i, line)| {
+            let (timestamp, content) = parse_line(line);
+            LogLine {
+                line_number: line_offset + i as u64,
+                content,
+                timestamp,
+            }
         })
         .collect();
 
@@ -105,8 +125,9 @@ pub async fn tail_digest(id: &str) -> Result<LogDigest> {
                     line_number += 1;
                     total_lines += 1;
                     let line = String::from_utf8_lossy(&partial_line);
+                    let (_, content) = parse_line(&line);
                     process_line(
-                        &line,
+                        &content,
                         line_number,
                         &mut errors,
                         &mut warnings,
@@ -125,11 +146,12 @@ pub async fn tail_digest(id: &str) -> Result<LogDigest> {
             if buf[i] == b'\n' {
                 line_number += 1;
                 total_lines += 1;
-                let mut line_bytes = partial_line.clone();
-                line_bytes.extend_from_slice(&buf[start..i]);
-                let line = String::from_utf8_lossy(&line_bytes);
-                process_line(
-                    &line,
+                    let mut line_bytes = partial_line.clone();
+                    line_bytes.extend_from_slice(&buf[start..i]);
+                    let line = String::from_utf8_lossy(&line_bytes);
+                    let (_, content) = parse_line(&line);
+                    process_line(
+                        &content,
                     line_number,
                     &mut errors,
                     &mut warnings,
@@ -208,10 +230,13 @@ pub async fn diff_since(id: &str, cursor: u64) -> Result<(Vec<LogLine>, u64)> {
     let lines: Vec<LogLine> = content
         .lines()
         .enumerate()
-        .map(|(i, line)| LogLine {
-            line_number: line_offset + i as u64 + 1,
-            content: line.to_string(),
-            timestamp: None,
+        .map(|(i, line)| {
+            let (timestamp, content) = parse_line(line);
+            LogLine {
+                line_number: line_offset + i as u64 + 1,
+                content,
+                timestamp,
+            }
         })
         .collect();
 

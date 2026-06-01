@@ -6,14 +6,17 @@ use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Shows log lines since the last diff call.
-pub async fn diff(id: String) -> Result<()> {
+pub async fn diff(id: String, lines: Option<usize>) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
     let mut client = DaemonClient::connect(&socket_path).await?;
 
     let response = client
-        .send::<serde_json::Value>(Command::Diff { id: id.clone() })
+        .send::<serde_json::Value>(Command::Diff {
+            id: id.clone(),
+            lines,
+        })
         .await?;
 
     if !response.ok {

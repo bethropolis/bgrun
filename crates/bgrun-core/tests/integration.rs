@@ -144,6 +144,7 @@ async fn test_proto_serialization_roundtrip() {
         max_runtime_ms: Some(600_000),
         env: [("RUST_LOG".into(), "debug".into())].into(),
         after: Some("db".into()),
+        cwd: None,
     };
 
     let json = serde_json::to_string(&args).unwrap();

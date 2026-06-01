@@ -21,11 +21,12 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--name <NAME>` | Named job (enables idempotent re-run; second `run --name X` returns the existing job if alive) |
 | `--workspace <WS>` | Group jobs for batch operations |
 | `--ready-when <PATTERN>` | Mark job `Ready` when a log line matches this substring |
+| `--ready-when-regex <REGEX>` | Mark job `Ready` when a log line matches this regex |
 | `--ready-when-port <PORT>` | Mark job `Ready` when TCP port `localhost:PORT` accepts connections |
 | `--ready-when-url <URL>` | Mark job `Ready` when GET returns HTTP 2xx |
 | `--ready-when-file <PATH>` | Mark job `Ready` when file exists |
 | `--after <NAME>` | Wait for named job to reach `Ready` (or `Exited`/`Crashed`) before spawning |
-| `--pty` | Allocate a pseudo-terminal (useful for processes that buffer output differently with pipes) |
+| `--pty` | Allocate a pseudo-terminal (useful for processes that buffer output differently with pipes). The PTY is allocated by bgrun's `portable-pty` library. **Known limitation:** programs that open their own PTY (e.g. `podman exec -it`, `ssh`, `docker attach`) may not work with `--pty` because the child's PTY is consumed by the inner command rather than bgrun's PTY master. |
 | `--restart on-crash` | Auto-restart if the process exits non-zero (SIGKILL, crash, non-zero exit) |
 | `--backoff <DURATION>` | Delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`) |
 
@@ -222,7 +223,7 @@ bgrun diff server
 
 ## wait
 
-Block until a job reaches `Ready` state, or a timeout elapses.
+Block until a job reaches `Ready` state, or a timeout elapses. If the job exits or crashes before becoming ready, returns immediately with the terminal state and exit code.
 
 ```
 bgrun wait <ID> [--timeout <DURATION>]
@@ -241,13 +242,25 @@ bgrun wait db --timeout 5m
 **Output** (JSON)
 
 ```json
-{"ready":true,"elapsed_ms":1234}
+{"ready":true,"elapsed_ms":1234,"exit_code":null,"state":null}
 ```
 
-If the job exits with a non-zero code before becoming Ready, the response is:
+If the job exits with code 0 before becoming Ready (pattern not matched):
 
 ```json
-{"ready":false,"elapsed_ms":60000}
+{"ready":false,"elapsed_ms":350,"exit_code":0,"state":"exited"}
+```
+
+If the job crashes before becoming Ready:
+
+```json
+{"ready":false,"elapsed_ms":150,"exit_code":1,"state":"crashed"}
+```
+
+If the timeout elapses while the job is still Running:
+
+```json
+{"ready":false,"elapsed_ms":60000,"exit_code":null,"state":null}
 ```
 
 ---
@@ -314,7 +327,14 @@ bgrun send server "some multi-word input"
 {"ok":true}
 ```
 
-Only works for jobs that were spawned with piped stdin (the default). Jobs spawned with `--pty` use the PTY for stdin and don't support send.
+**Note:** `bgrun send` does **not** add a trailing newline. For line-buffered programs (e.g. interactive shells), you must include `\n` explicitly:
+
+```bash
+bgrun send server "/reload\n"
+bgrun send server $'yes\n'
+```
+
+Works with both piped and `--pty` jobs.
 
 ---
 

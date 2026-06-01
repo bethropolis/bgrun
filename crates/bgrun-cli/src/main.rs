@@ -33,9 +33,13 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
 
-        /// Readiness: match a log pattern
+        /// Readiness: match a log pattern (substring)
         #[arg(long)]
         ready_when: Option<String>,
+
+        /// Readiness: match a log pattern (regex)
+        #[arg(long)]
+        ready_when_regex: Option<String>,
 
         /// Readiness: poll a TCP port
         #[arg(long)]
@@ -121,6 +125,10 @@ enum Commands {
     Diff {
         /// Job ID
         id: String,
+
+        /// Number of lines to show (unlimited if not set)
+        #[arg(long)]
+        lines: Option<usize>,
     },
 
     /// Run multiple named jobs in parallel
@@ -171,6 +179,7 @@ async fn main() -> Result<()> {
             name,
             workspace,
             ready_when,
+            ready_when_regex,
             ready_when_port,
             ready_when_url,
             ready_when_file,
@@ -181,6 +190,7 @@ async fn main() -> Result<()> {
         } => {
             let flags = commands::run::RunFlags {
                 ready_when,
+                ready_when_regex,
                 ready_when_port,
                 ready_when_url,
                 ready_when_file,
@@ -211,8 +221,8 @@ async fn main() -> Result<()> {
         } => {
             commands::tail::tail(id, lines, digest, level).await?;
         }
-        Commands::Diff { id } => {
-            commands::diff::diff(id).await?;
+        Commands::Diff { id, lines } => {
+            commands::diff::diff(id, lines).await?;
         }
         Commands::RunGroup { names } => {
             commands::run_group::run_group(names).await?;

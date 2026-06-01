@@ -16,6 +16,8 @@ pub struct RunArgs {
     pub env: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cwd: Option<String>,
 }
 
 /// Arguments for the Kill command.
@@ -43,7 +45,7 @@ pub enum Command {
     List { workspace: Option<String> },
     Kill(KillArgs),
     Tail(TailArgs),
-    Diff { id: String },
+    Diff { id: String, lines: Option<usize> },
     Wait { id: String, timeout_ms: u64 },
     Send { id: String, data: String },
     Stats { id: String },

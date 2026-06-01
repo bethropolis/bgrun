@@ -49,6 +49,15 @@ pub async fn wait(id: String, timeout: String) -> Result<()> {
             crate::output::OutputMode::Human => {
                 if result.ready {
                     println!("Job {} is ready ({}ms)", id, result.elapsed_ms);
+                } else if let Some(ref s) = result.state {
+                    let ec = result
+                        .exit_code
+                        .map(|c| format!(", exit_code={}", c))
+                        .unwrap_or_default();
+                    println!(
+                        "Job {} reached terminal state {}{} ({}ms)",
+                        id, s, ec, result.elapsed_ms
+                    );
                 } else {
                     println!(
                         "Job {} did not become ready within {}ms",
