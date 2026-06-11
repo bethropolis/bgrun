@@ -1,6 +1,6 @@
 # Command Reference
 
-bgrun has 12 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
+bgrun has 16 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
 
 The daemon auto-starts on the first CLI invocation. You don't need to manually start it.
 
@@ -29,6 +29,9 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--pty` | Allocate a pseudo-terminal (useful for processes that buffer output differently with pipes). The PTY is allocated by bgrun's `portable-pty` library. **Known limitation:** programs that open their own PTY (e.g. `podman exec -it`, `ssh`, `docker attach`) may not work with `--pty` because the child's PTY is consumed by the inner command rather than bgrun's PTY master. |
 | `--restart on-crash` | Auto-restart if the process exits non-zero (SIGKILL, crash, non-zero exit) |
 | `--backoff <DURATION>` | Delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`) |
+| `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
+| `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |
+| `--rows <N>` | PTY height in rows (default: 24, only with `--pty`) |
 
 **Examples**
 
@@ -384,6 +387,144 @@ bgrun skill install ~/.config/opencode/skills/bgrun
 
 ```
 Installed skill to /home/user/.config/opencode/skills/bgrun/SKILL.md
+```
+
+---
+
+## attach
+
+Attach to a PTY job's interactive terminal. Enables raw bidirectional communication with a process running in a pseudo-terminal.
+
+```
+bgrun attach <ID>
+```
+
+**Examples**
+
+```bash
+bgrun attach server
+```
+
+Once attached, the terminal enters raw mode:
+- Keystrokes are forwarded to the PTY job's stdin.
+- The job's PTY output is displayed live.
+- **Ctrl+C** detaches without killing the job (unlike a normal terminal).
+- **Ctrl+\** (SIGQUIT) is also forwarded but may terminate the job.
+- Terminal resize events are forwarded to the PTY master.
+
+The connection is closed automatically when the job exits.
+
+---
+
+## expect
+
+Wait for a pattern to appear in a job's log output. Returns when the pattern is found or the timeout expires.
+
+```
+bgrun expect <ID> <PATTERN> [--regex] [--timeout <DURATION>]
+```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--regex` | Treat pattern as a regular expression |
+| `--timeout <D>` | Max wait time, e.g. `30s`, `5m` (default: `60s`) |
+
+**Examples**
+
+```bash
+# Wait for substring
+bgrun expect server "listening on"
+
+# Wait for regex
+bgrun expect server "http://localhost:\d+" --regex
+
+# With custom timeout
+bgrun expect server "ready" --timeout 10s
+```
+
+**Output** (JSON) — on match:
+
+```json
+{"matched":true,"line_number":42,"content":"listening on :8080"}
+```
+
+On timeout:
+
+```json
+{"matched":false,"line_number":null,"content":null}
+```
+
+---
+
+## schema
+
+Print JSON Schema (draft-07) for a command's argument struct. Designed for AI agents to discover the expected input shape at runtime.
+
+```
+bgrun schema <COMMAND>
+```
+
+Supported commands: `run`, `kill`, `tail`.
+
+**Examples**
+
+```bash
+bgrun schema run
+bgrun schema kill
+bgrun schema tail
+```
+
+**Output** (JSON) — a standard JSON Schema document with `title`, `type`, `properties`, and `required` fields.
+
+---
+
+## completions (hidden)
+
+Hidden subcommand for shell autocomplete scripts. Prints tab-separated job information for Fish shell tab-completion.
+
+```
+bgrun completions --active-ids
+bgrun completions --workspaces
+```
+
+**Examples**
+
+```fish
+# In ~/.config/fish/completions/bgrun.fish:
+complete -c bgrun -n "__fish_seen_subcommand_from status kill wait tail diff send stats attach expect" -a "(bgrun completions --active-ids)"
+complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
+```
+
+---
+
+## Interactive menu
+
+Running `bgrun` without any subcommand opens an interactive TUI menu:
+
+- **List & Refresh Jobs** — runs `bgrun list`
+- **View Job Status/Stats** — select a job, shows status and resource stats
+- **Attach to Interactive PTY** — select a job and attach
+- **Tail Job Logs** — select a job, shows last 20 lines
+- **Kill a Job** — select a job and kill it
+- **Exit Menu**
+
+The job list is populated live from the daemon, showing short ID, name, state, and command.
+
+---
+
+## ID resolution
+
+All commands that accept a job ID also accept:
+- **Full UUID** — the canonical job identifier
+- **Job name** — as set with `--name`
+- **Unique prefix** — at least 4 characters of the UUID that match exactly one job
+
+```bash
+bgrun status abc1          # prefix match
+bgrun status my-server     # name match
+bgrun status abc12345...   # full UUID
 ```
 
 ---

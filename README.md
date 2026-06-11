@@ -57,7 +57,12 @@ bgrun kill abc123
 | `bgrun send <id> <data>` | Write to stdin |
 | `bgrun stats <id>` | Show CPU/RSS/uptime |
 | `bgrun kill <id> [--workspace <ws>]` | Terminate job(s) |
+| `bgrun attach <id>` | Attach to a PTY job interactively |
+| `bgrun expect <id> <pattern>` | Wait for a log line matching pattern |
+| `bgrun stats <id>` | Show CPU/RSS/uptime |
+| `bgrun schema <command>` | Print JSON Schema for a command's args |
 | `bgrun skill install <dir>` | Install embedded skill bundle |
+| `bgrun` (no args) | Open interactive TUI menu |
 
 ## Docs
 
