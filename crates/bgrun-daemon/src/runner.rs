@@ -26,6 +26,16 @@ pub static PTY_WRITERS: once_cell::sync::Lazy<
     Mutex<HashMap<String, Arc<std::sync::Mutex<PtyWriter>>>>,
 > = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Global map of job IDs to their PTY master handles (for resize operations).
+pub static PTY_PAIRS: once_cell::sync::Lazy<
+    Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
+> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Broadcast senders for raw PTY output to attached clients.
+pub static JOB_BROADCASTS: once_cell::sync::Lazy<
+    Mutex<HashMap<String, tokio::sync::broadcast::Sender<Vec<u8>>>>,
+> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Spawns a new job process and returns its record.
 pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<JobRecord> {
     // Idempotency: if a named job is already alive, return it
@@ -251,9 +261,11 @@ async fn handle_job_exit(
         }
     }
 
-    // Clean up stdin/PTY handles
+    // Clean up stdin/PTY handles and global states
     STDIN_HANDLES.lock().await.remove(&id);
     PTY_WRITERS.lock().await.remove(&id);
+    PTY_PAIRS.lock().await.remove(&id);
+    JOB_BROADCASTS.lock().await.remove(&id);
 
     // Persist status
     let job = {
@@ -347,9 +359,20 @@ async fn spawn_pty_job(
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
     let pty_system = native_pty_system();
+    let cols = args.pty_cols.unwrap_or(80);
+    let rows = args.pty_rows.unwrap_or(24);
     let pair = pty_system
-        .openpty(PtySize::default())
+        .openpty(PtySize {
+            cols,
+            rows,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .context("failed to open PTY")?;
+
+    // Destructure the PtyPair to get master and slave
+    let master = pair.master;
+    let slave = pair.slave;
 
     let mut cmd_builder = CommandBuilder::new(&cmd[0]);
     if cmd.len() > 1 {
@@ -359,8 +382,7 @@ async fn spawn_pty_job(
         cmd_builder.cwd(cwd);
     }
 
-    let child = pair
-        .slave
+    let child = slave
         .spawn_command(cmd_builder)
         .context("failed to spawn process in PTY")?;
     let pid = child
@@ -368,14 +390,12 @@ async fn spawn_pty_job(
         .ok_or_else(|| anyhow::anyhow!("PTY child did not report a pid"))?;
 
     // Clone the PTY master reader for output capture (sync reads)
-    let reader = pair
-        .master
+    let reader = master
         .try_clone_reader()
         .context("failed to clone PTY reader")?;
 
     // Take the PTY master writer for stdin injection (can only be taken once)
-    let writer = pair
-        .master
+    let writer = master
         .take_writer()
         .context("failed to take PTY writer")?;
     PTY_WRITERS
@@ -383,11 +403,25 @@ async fn spawn_pty_job(
         .await
         .insert(id.clone(), Arc::new(std::sync::Mutex::new(writer)));
 
+    // Store the master handle for resize operations
+    PTY_PAIRS
+        .lock()
+        .await
+        .insert(id.clone(), master);
+
+    // Create broadcast channel for PTY output to attached clients
+    let (tx, _rx) = tokio::sync::broadcast::channel(1024);
+    JOB_BROADCASTS
+        .lock()
+        .await
+        .insert(id.clone(), tx.clone());
+
     // Spawn blocking task to capture PTY output (sync reads on PTY master)
+    // Broadcast sender is passed through so raw bytes reach attached clients
     let log_path = job_dir.join("stdout.log");
     let id_clone = id.clone();
     tokio::task::spawn_blocking(move || {
-        capture_pty_output(reader, &log_path, &id_clone);
+        capture_pty_output(reader, &log_path, &id_clone, tx);
     });
 
     // Create Job record
@@ -682,8 +716,7 @@ async fn capture_output(
     }
 }
 
-/// Writes a single line (with trailing \n) to the log file, prepending an
-/// ISO 8601 timestamp with millisecond precision.
+/// Writes a single line to the log file as a structured NDJSON entry.
 async fn write_ts_line(
     file: &mut tokio::fs::File,
     line: &[u8],
@@ -692,15 +725,22 @@ async fn write_ts_line(
 ) {
     use tokio::io::AsyncWriteExt;
 
-    let ts = chrono::Utc::now().format("[%Y-%m-%dT%H:%M:%S%.3fZ] ");
-    let ts_bytes = ts.to_string().into_bytes();
+    let content = String::from_utf8_lossy(line)
+        .trim_end_matches('\n')
+        .to_string();
+    let entry = bgrun_daemon::log_manager::DiskLogEntry {
+        t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        s: label.to_string(),
+        c: content,
+    };
+    let json = serde_json::to_string(&entry).unwrap_or_default();
 
-    if file.write_all(&ts_bytes).await.is_err() {
-        error!(id = %id, label = %label, "failed to write timestamp to log");
+    if file.write_all(json.as_bytes()).await.is_err() {
+        error!(id = %id, label = %label, "failed to write log entry");
         return;
     }
-    if file.write_all(line).await.is_err() {
-        error!(id = %id, label = %label, "failed to write line to log");
+    if file.write_all(b"\n").await.is_err() {
+        error!(id = %id, label = %label, "failed to write newline to log");
     }
 }
 
@@ -708,15 +748,22 @@ async fn write_ts_line(
 fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     use std::io::Write;
 
-    let ts = chrono::Utc::now().format("[%Y-%m-%dT%H:%M:%S%.3fZ] ");
-    let ts_bytes = ts.to_string().into_bytes();
+    let content = String::from_utf8_lossy(line)
+        .trim_end_matches('\n')
+        .to_string();
+    let entry = bgrun_daemon::log_manager::DiskLogEntry {
+        t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        s: "pty".to_string(),
+        c: content,
+    };
+    let json = serde_json::to_string(&entry).unwrap_or_default();
 
-    if file.write_all(&ts_bytes).is_err() {
-        error!(id = %id, "failed to write timestamp to PTY log");
+    if file.write_all(json.as_bytes()).is_err() {
+        error!(id = %id, "failed to write PTY log entry");
         return;
     }
-    if file.write_all(line).is_err() {
-        error!(id = %id, "failed to write line to PTY log");
+    if file.write_all(b"\n").is_err() {
+        error!(id = %id, "failed to write newline to PTY log");
     }
 }
 
@@ -726,6 +773,7 @@ fn capture_pty_output(
     mut reader: Box<dyn std::io::Read + Send>,
     log_path: &std::path::Path,
     id: &str,
+    broadcast_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 ) {
     use std::io::Read;
 
@@ -752,6 +800,9 @@ fn capture_pty_output(
                 break;
             }
             Ok(n) => {
+                // Broadcast raw bytes to attached clients (ignore if none)
+                let _ = broadcast_tx.send(buf[..n].to_vec());
+
                 let mut start = 0;
                 for i in 0..n {
                     if buf[i] == b'\n' {

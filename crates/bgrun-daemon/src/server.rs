@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bgrun_core::JobStore;
 use bgrun_proto::{Command, KillArgs, Request, Response, TailArgs, WaitResult};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -49,20 +49,54 @@ pub async fn run_server(
 }
 
 /// Handles a single connection: reads NDJSON requests, dispatches, writes responses.
+/// For Attach commands, it hijacks the connection for bidirectional byte streaming.
 async fn handle_connection(
     stream: UnixStream,
     store: Arc<Mutex<JobStore>>,
     sysinfo_system: SharedSystem,
 ) -> Result<()> {
+    // Peek at the first request without consuming the stream.
+    // Attach hijacks the stream, so we cannot split it upfront.
+    let first_line = read_first_line(&stream).await;
+    let first_line = match first_line {
+        Some(l) => l,
+        None => return Ok(()),
+    };
+
+    let request: Request = match serde_json::from_str(&first_line) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+
+    // If it's an Attach command, hijack the connection for raw streaming
+    if let Command::Attach { id } = request.command {
+        return handle_attach(id, stream, store).await;
+    }
+
+    // Normal path: split the stream and continue with NDJSON dispatching
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
     let mut line = String::new();
 
-    // Read one request per connection (simplified for Phase 1)
+    // Dispatch the first request (already parsed before we split)
+    let first_response = dispatch(
+        Request {
+            id: request.id.clone(),
+            command: request.command.clone(),
+        },
+        store.clone(),
+        sysinfo_system.clone(),
+    )
+    .await;
+    let json = serde_json::to_string(&first_response)?;
+    writer.write_all(json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+
+    // Read subsequent requests
     loop {
         line.clear();
         match buf_reader.read_line(&mut line).await {
-            Ok(0) => break, // EOF
+            Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
                 error!("read error: {}", e);
@@ -77,15 +111,7 @@ async fn handle_connection(
 
         let request: Request = match serde_json::from_str(line) {
             Ok(r) => r,
-            Err(e) => {
-                let err_resp =
-                    Response::<()>::err("unknown".into(), format!("invalid request: {}", e));
-                let _ = writer
-                    .write_all(serde_json::to_string(&err_resp)?.as_bytes())
-                    .await;
-                let _ = writer.write_all(b"\n").await;
-                continue;
-            }
+            Err(_) => continue,
         };
 
         let response = dispatch(request, store.clone(), sysinfo_system.clone()).await;
@@ -93,6 +119,150 @@ async fn handle_connection(
         writer.write_all(json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
     }
+
+    Ok(())
+}
+
+/// Reads the first line from a UnixStream without consuming the stream.
+/// Reads byte-by-byte up to a newline, with a 64KB limit.
+async fn read_first_line(stream: &UnixStream) -> Option<String> {
+    stream.readable().await.ok()?;
+    let mut buf = vec![0u8; 1];
+    let mut line = Vec::new();
+    loop {
+        match stream.try_read(&mut buf) {
+            Ok(0) => return None,
+            Ok(1) => {
+                if buf[0] == b'\n' {
+                    break;
+                }
+                line.push(buf[0]);
+                if line.len() > 65536 {
+                    return None;
+                }
+            }
+            Ok(_) => continue,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                stream.readable().await.ok()?;
+                continue;
+            }
+            Err(_) => return None,
+        }
+    }
+    String::from_utf8(line).ok()
+}
+
+/// Handles an Attach command: hijacks the connection for bidirectional raw byte piping.
+///
+/// 1. Sends an initial NDJSON success response
+/// 2. Forwards socket reads → PTY writer (stdin)
+/// 3. Forwards broadcast PTY output → socket (stdout)
+/// 4. Returns when either side disconnects or the job exits
+async fn handle_attach(
+    id: String,
+    stream: UnixStream,
+    store: Arc<Mutex<JobStore>>,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    // Verify job exists, is alive, and has a PTY
+    let is_pty = {
+        let store_ref = store.lock().await;
+        match store_ref.get(&id) {
+            Some(job) if job.is_alive() && job.pty => true,
+            Some(_) => false,
+            None => false,
+        }
+    };
+
+    if !is_pty {
+        let (_reader, mut writer) = stream.into_split();
+        let err = Response::<()>::err("attach".into(), "job not found, not alive, or not a PTY job");
+        let json = serde_json::to_string(&err).unwrap_or_default();
+        let _ = writer.write_all(json.as_bytes()).await;
+        let _ = writer.write_all(b"\n").await;
+        return Ok(());
+    }
+
+    // Split the stream for bidirectional piping
+    let (mut stream_read, mut stream_write) = stream.into_split();
+
+    // Send initial success response
+    let init = serde_json::json!({
+        "id": "attach",
+        "ok": true,
+        "data": { "attached": true },
+    });
+    let json = serde_json::to_string(&init)?;
+    stream_write.write_all(json.as_bytes()).await?;
+    stream_write.write_all(b"\n").await?;
+
+    // Get the PTY writer for stdin injection
+    let pty_writer = {
+        let mut writers = runner::PTY_WRITERS.lock().await;
+        writers.get_mut(&id).map(|w| w.clone())
+    };
+
+    let pty_writer = match pty_writer {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+
+    // Subscribe to the broadcast channel for PTY output
+    let rx = {
+        let broadcasts = runner::JOB_BROADCASTS.lock().await;
+        broadcasts.get(&id).map(|tx| tx.subscribe())
+    };
+
+    let mut rx = match rx {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+
+    // Spawn task to forward broadcast PTY output → socket write half
+    let write_half = Arc::new(tokio::sync::Mutex::new(stream_write));
+    let write_half_clone = write_half.clone();
+
+    let output_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(bytes) => {
+                    let mut writer = write_half_clone.lock().await;
+                    if writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                    let _ = writer.flush().await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    });
+
+    // Forward socket reads → PTY writer (stdin)
+    // Reads raw bytes from the socket and writes them to the PTY
+    {
+        let mut buf = [0u8; 8192];
+        loop {
+            match stream_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = buf[..n].to_vec();
+                    let mut writer = pty_writer.lock().unwrap();
+                    use std::io::Write;
+                    if writer.write_all(&data).is_err() {
+                        break;
+                    }
+                    let _ = writer.flush();
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    // Wait for output task to finish
+    output_task.abort();
+    let _ = output_task.await;
 
     Ok(())
 }
@@ -240,6 +410,7 @@ async fn dispatch(
             lines,
             digest,
             level,
+            strip_ansi,
         }) => {
             if digest {
                 match bgrun_daemon::log_manager::tail_digest(&id).await {
@@ -260,6 +431,13 @@ async fn dispatch(
                             log_lines
                                 .retain(|line| line.content.to_lowercase().contains(&lvl_lower));
                         }
+                        // Strip ANSI escape codes if requested
+                        if strip_ansi {
+                            for line in &mut log_lines {
+                                let clean = strip_ansi_escapes::strip(line.content.as_bytes());
+                                line.content = String::from_utf8_lossy(&clean).into_owned();
+                            }
+                        }
                         let lines_json = serde_json::json!({
                             "lines": log_lines,
                         });
@@ -274,7 +452,11 @@ async fn dispatch(
                 }
             }
         }
-        Command::Diff { id, lines } => {
+        Command::Diff {
+            id,
+            lines,
+            strip_ansi,
+        } => {
             // Read current cursor from store
             let cursor = {
                 let store_ref = store.lock().await;
@@ -312,6 +494,13 @@ async fn dispatch(
                             let _ = bgrun_daemon::state::write_status(job).await;
                         }
                     }
+                    // Strip ANSI escape codes if requested
+                    if strip_ansi {
+                        for line in &mut log_lines {
+                            let clean = strip_ansi_escapes::strip(line.content.as_bytes());
+                            line.content = String::from_utf8_lossy(&clean).into_owned();
+                        }
+                    }
                     let result = serde_json::json!({
                         "lines": log_lines,
                         "cursor": actual_new,
@@ -337,6 +526,98 @@ async fn dispatch(
                 Err(e) => Response::err(req_id.clone(), e.to_string()),
             }
         }
+        Command::Expect {
+            id,
+            pattern,
+            is_regex,
+            timeout_ms,
+        } => {
+            let start = tokio::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(timeout_ms);
+
+            // Verify job exists and is alive
+            {
+                let store_ref = store.lock().await;
+                match store_ref.get(&id) {
+                    Some(job) if job.is_alive() => {}
+                    Some(_) => {
+                        let err = Response::<()>::err(req_id.clone(), "job is not alive");
+                        return serde_json::to_value(err).unwrap_or_default();
+                    }
+                    None => {
+                        let err = Response::<()>::err(req_id.clone(), "job not found");
+                        return serde_json::to_value(err).unwrap_or_default();
+                    }
+                }
+            }
+
+            let log_path = bgrun_daemon::state::job_dir(&id).join("stdout.log");
+            let mut cursor = get_file_size(&log_path).await;
+            let mut line_offset = count_lines_up_to(&log_path, cursor).await;
+
+            loop {
+                if start.elapsed() >= timeout {
+                    let result = serde_json::json!({
+                        "matched": false,
+                        "line_number": null,
+                        "content": null,
+                    });
+                    break Response::ok(req_id.clone(), result);
+                }
+
+                // Check if job is still alive
+                {
+                    let store_ref = store.lock().await;
+                    match store_ref.get(&id) {
+                        Some(job) if job.is_alive() => {}
+                        _ => {
+                            let err = Response::<()>::err(req_id.clone(), "job exited before pattern was matched");
+                            return serde_json::to_value(err).unwrap_or_default();
+                        }
+                    }
+                }
+
+                // Check for new content in the log
+                let file_size = get_file_size(&log_path).await;
+                if file_size > cursor {
+                    let new_content = read_range(&log_path, cursor, file_size).await;
+                    cursor = file_size;
+
+                    if let Some(content) = new_content {
+                        let mut matched_line: Option<(u64, String)> = None;
+
+                        for (i, line) in content.lines().enumerate() {
+                            let found = if is_regex {
+                                regex::Regex::new(&pattern)
+                                    .ok()
+                                    .is_some_and(|re| re.is_match(line))
+                            } else {
+                                line.contains(&pattern)
+                            };
+
+                            if found {
+                                let line_number = line_offset + i as u64 + 1;
+                                matched_line = Some((line_number, line.to_string()));
+                                break;
+                            }
+                        }
+
+                        if let Some((line_number, line_content)) = matched_line {
+                            let result = serde_json::json!({
+                                "matched": true,
+                                "line_number": line_number,
+                                "content": line_content,
+                            });
+                            break Response::ok(req_id.clone(), result);
+                        }
+
+                        line_offset += content.lines().count() as u64;
+                    }
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
         Command::RunGroup { jobs } => {
             let mut records = Vec::new();
             let mut errors = Vec::new();
@@ -356,6 +637,29 @@ async fn dispatch(
                 Response::err(req_id.clone(), errors.join("; "))
             }
         }
+        Command::ResizePty { id, cols, rows } => {
+            let mut masters = runner::PTY_PAIRS.lock().await;
+            match masters.get_mut(&id) {
+                Some(master) => {
+                    if let Err(e) = master.resize(portable_pty::PtySize {
+                        cols,
+                        rows,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    }) {
+                        Response::err(req_id.clone(), format!("resize failed: {}", e))
+                    } else {
+                        Response::ok(req_id.clone(), serde_json::json!({"resized": true}))
+                    }
+                }
+                None => Response::err(req_id.clone(), "no PTY master for job"),
+            }
+        }
+        Command::Attach { .. } => {
+            // Attach is handled upstream in handle_connection before dispatch.
+            // This arm exists for exhaustiveness but should never be reached.
+            Response::err(req_id.clone(), "attach not supported via dispatch")
+        }
     };
 
     // Record audit entry
@@ -371,6 +675,57 @@ async fn dispatch(
         ))
         .unwrap_or_default(),
     }
+}
+
+/// Returns the size of a file, or 0 if it doesn't exist.
+async fn get_file_size(path: &std::path::Path) -> u64 {
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
+/// Reads bytes from `start` to `end` in a file.
+async fn read_range(path: &std::path::Path, start: u64, end: u64) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await
+        .ok()?;
+    file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
+    let len = (end - start) as usize;
+    let mut buf = vec![0u8; len];
+    file.read_exact(&mut buf).await.ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Counts the number of newlines in a file up to the given byte offset.
+async fn count_lines_up_to(path: &std::path::Path, offset: u64) -> u64 {
+    use tokio::io::AsyncReadExt;
+
+    if offset == 0 {
+        return 0;
+    }
+    let mut file = match tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await
+    {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    if file.seek(std::io::SeekFrom::Start(0)).await.is_err() {
+        return 0;
+    }
+    let to_read = offset.min(10 * 1024 * 1024) as usize; // cap at 10MB
+    let mut buf = vec![0u8; to_read];
+    let n = match file.read(&mut buf).await {
+        Ok(n) => n,
+        Err(_) => return 0,
+    };
+    buf[..n].iter().filter(|&&b| b == b'\n').count() as u64
 }
 
 #[cfg(test)]

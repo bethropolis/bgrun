@@ -68,6 +68,14 @@ enum Commands {
         /// Backoff duration for restart (e.g. "2s", "5m")
         #[arg(long)]
         backoff: Option<String>,
+
+        /// PTY columns (default 80)
+        #[arg(long)]
+        cols: Option<u16>,
+
+        /// PTY rows (default 24)
+        #[arg(long)]
+        rows: Option<u16>,
     },
 
     /// List running jobs
@@ -119,6 +127,10 @@ enum Commands {
         /// Filter by level (e.g. "error", "warn")
         #[arg(long)]
         level: Option<String>,
+
+        /// Strip ANSI escape codes from output
+        #[arg(long)]
+        strip_ansi: bool,
     },
 
     /// Show log lines since the last diff call
@@ -129,6 +141,10 @@ enum Commands {
         /// Number of lines to show (unlimited if not set)
         #[arg(long)]
         lines: Option<usize>,
+
+        /// Strip ANSI escape codes from output
+        #[arg(long)]
+        strip_ansi: bool,
     },
 
     /// Run multiple named jobs in parallel
@@ -149,6 +165,29 @@ enum Commands {
 
     /// Show resource stats for a running job
     Stats {
+        /// Job ID
+        id: String,
+    },
+
+    /// Wait for a pattern in a job's log output
+    Expect {
+        /// Job ID
+        id: String,
+
+        /// Pattern to wait for
+        pattern: String,
+
+        /// Treat pattern as a regex
+        #[arg(long)]
+        regex: bool,
+
+        /// Timeout (e.g. "5s", "30s", "2m", default "60s")
+        #[arg(long, default_value = "60s")]
+        timeout: String,
+    },
+
+    /// Attach to a PTY job's interactive terminal
+    Attach {
         /// Job ID
         id: String,
     },
@@ -187,6 +226,8 @@ async fn main() -> Result<()> {
             pty,
             restart,
             backoff,
+            cols,
+            rows,
         } => {
             let flags = commands::run::RunFlags {
                 ready_when,
@@ -198,6 +239,8 @@ async fn main() -> Result<()> {
                 pty,
                 restart,
                 backoff,
+                pty_cols: cols,
+                pty_rows: rows,
             };
             commands::run::run(cmd, name, workspace, flags).await?;
         }
@@ -218,11 +261,16 @@ async fn main() -> Result<()> {
             lines,
             digest,
             level,
+            strip_ansi,
         } => {
-            commands::tail::tail(id, lines, digest, level).await?;
+            commands::tail::tail(id, lines, digest, level, strip_ansi).await?;
         }
-        Commands::Diff { id, lines } => {
-            commands::diff::diff(id, lines).await?;
+        Commands::Diff {
+            id,
+            lines,
+            strip_ansi,
+        } => {
+            commands::diff::diff(id, lines, strip_ansi).await?;
         }
         Commands::RunGroup { names } => {
             commands::run_group::run_group(names).await?;
@@ -232,6 +280,17 @@ async fn main() -> Result<()> {
         }
         Commands::Stats { id } => {
             commands::stats::stats(id).await?;
+        }
+        Commands::Attach { id } => {
+            commands::attach::attach_job(id).await?;
+        }
+        Commands::Expect {
+            id,
+            pattern,
+            regex,
+            timeout,
+        } => {
+            commands::expect::expect(id, pattern, regex, timeout).await?;
         }
         Commands::Skill { command } => match command {
             SkillCommands::Install { path } => {

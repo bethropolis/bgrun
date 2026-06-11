@@ -1,4 +1,6 @@
+pub mod attach;
 pub mod diff;
+pub mod expect;
 pub mod kill;
 pub mod list;
 pub mod run;

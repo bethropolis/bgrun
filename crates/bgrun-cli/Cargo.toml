@@ -17,3 +17,5 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 is-terminal = "0.4"
+crossterm = { workspace = true, features = ["event-stream"] }
+futures-util = { workspace = true }
