@@ -6,7 +6,7 @@ use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Shows log lines since the last diff call.
-pub async fn diff(id: String, lines: Option<usize>) -> Result<()> {
+pub async fn diff(id: String, lines: Option<usize>, strip_ansi: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -16,6 +16,7 @@ pub async fn diff(id: String, lines: Option<usize>) -> Result<()> {
         .send::<serde_json::Value>(Command::Diff {
             id: id.clone(),
             lines,
+            strip_ansi,
         })
         .await?;
 

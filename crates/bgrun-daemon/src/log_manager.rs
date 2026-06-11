@@ -1,22 +1,29 @@
 use anyhow::{Context, Result};
 use bgrun_proto::{LogDigest, LogLine};
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::state;
 
-/// Parses a log line, extracting the optional ISO 8601 timestamp prefix.
+/// A single log entry written to disk as NDJSON.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DiskLogEntry {
+    /// ISO 8601 timestamp (e.g. "2026-06-01T10:32:00.123Z").
+    pub t: String,
+    /// Stream source: "stdout", "stderr", or "pty".
+    pub s: String,
+    /// Log line content (without trailing newline).
+    pub c: String,
+}
+
+/// Parses a log line in NDJSON format.
 ///
-/// Expected format: `[2026-06-01T10:32:00.123Z] content here`
-/// Lines without a valid timestamp prefix return `(None, raw_line)`.
+/// Expected format: `{"t":"2026-06-01T10:32:00.123Z","s":"stdout","c":"content here"}`
+/// Falls back to treating the raw line as content if parsing fails
+/// (e.g. for legacy logs or empty lines).
 fn parse_line(raw: &str) -> (Option<String>, String) {
-    if let Some(stripped) = raw.strip_prefix('[') {
-        if let Some(end) = stripped.find("] ") {
-            let ts = &stripped[..end];
-            // Basic validation: contains T and ends with Z or offset digit
-            if ts.contains('T') {
-                return (Some(ts.to_string()), stripped[end + 2..].to_string());
-            }
-        }
+    if let Ok(entry) = serde_json::from_str::<DiskLogEntry>(raw.trim()) {
+        return (Some(entry.t), entry.c);
     }
     (None, raw.to_string())
 }

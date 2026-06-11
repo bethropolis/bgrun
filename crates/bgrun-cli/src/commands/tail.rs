@@ -6,7 +6,13 @@ use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Shows the last N lines of a job's log.
-pub async fn tail(id: String, lines: usize, digest: bool, level: Option<String>) -> Result<()> {
+pub async fn tail(
+    id: String,
+    lines: usize,
+    digest: bool,
+    level: Option<String>,
+    strip_ansi: bool,
+) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -18,6 +24,7 @@ pub async fn tail(id: String, lines: usize, digest: bool, level: Option<String>)
             lines,
             digest,
             level,
+            strip_ansi,
         }))
         .await?;
 

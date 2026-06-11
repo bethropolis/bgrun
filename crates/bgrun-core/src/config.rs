@@ -10,10 +10,20 @@ pub struct BgrunToml {
     pub jobs: HashMap<String, JobConfig>,
 }
 
+/// Supports either a single quoted string or an array of strings for `cmd`.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum TomlCmd {
+    /// A single string that will be lexed with `shlex`.
+    Single(String),
+    /// Pre-split argument array.
+    Array(Vec<String>),
+}
+
 /// Configuration for a single named job.
 #[derive(Deserialize, Debug, Clone)]
 pub struct JobConfig {
-    pub cmd: String,
+    pub cmd: TomlCmd,
     #[serde(rename = "ready-when")]
     pub ready_when: Option<String>,
     #[serde(rename = "ready-when-port")]
@@ -59,8 +69,15 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         .get(name)
         .ok_or_else(|| ConfigError::JobNotFound(name.into()))?;
 
-    // Parse cmd string into args (simple split on whitespace)
-    let cmd: Vec<String> = job.cmd.split_whitespace().map(String::from).collect();
+    // Parse cmd: array is used directly, single string goes through shlex
+    let cmd: Vec<String> = match &job.cmd {
+        TomlCmd::Array(arr) => arr.clone(),
+        TomlCmd::Single(s) => {
+            shlex::split(s).ok_or_else(|| ConfigError::ParseError(format!(
+                "failed to parse cmd string for job '{}': unmatched quotes or invalid syntax", name
+            )))?
+        }
+    };
 
     // Resolve readiness strategy
     let readiness = job
@@ -96,6 +113,8 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         env: HashMap::new(),
         after: job.after.clone(),
         cwd: None,
+        pty_cols: None,
+        pty_rows: None,
     })
 }
 
@@ -179,6 +198,29 @@ workspace = "myproject"
         let config = parse_config(sample_toml()).unwrap();
         let args = resolve_job_args("reliable", &config).unwrap();
         assert_eq!(args.restart, Some(RestartPolicy::OnCrash { backoff_ms: 2000 }));
+    }
+
+    #[test]
+    fn test_array_cmd_syntax() {
+        let toml = r#"
+[jobs.server]
+cmd = ["cargo", "run", "--release"]
+ready-when = "listening on"
+"#;
+        let config = parse_config(toml).unwrap();
+        let args = resolve_job_args("server", &config).unwrap();
+        assert_eq!(args.cmd, vec!["cargo", "run", "--release"]);
+    }
+
+    #[test]
+    fn test_quoted_cmd_with_spaces() {
+        let toml = r#"
+[jobs.test]
+cmd = "echo 'hello world'"
+"#;
+        let config = parse_config(toml).unwrap();
+        let args = resolve_job_args("test", &config).unwrap();
+        assert_eq!(args.cmd, vec!["echo", "hello world"]);
     }
 
     #[test]

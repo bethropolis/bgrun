@@ -18,6 +18,8 @@ pub struct RunFlags {
     pub pty: bool,
     pub restart: Option<String>,
     pub backoff: Option<String>,
+    pub pty_cols: Option<u16>,
+    pub pty_rows: Option<u16>,
 }
 
 /// Runs a command in the background via the daemon.
@@ -88,6 +90,8 @@ pub async fn run(
         env: HashMap::new(),
         after: flags.after,
         cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+        pty_cols: flags.pty_cols,
+        pty_rows: flags.pty_rows,
     };
 
     let response = client.send::<JobRecord>(Command::Run(args)).await?;
