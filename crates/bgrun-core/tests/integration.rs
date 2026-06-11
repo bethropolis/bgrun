@@ -142,6 +142,7 @@ async fn test_proto_serialization_roundtrip() {
         restart: Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms: 1000 }),
         pty: true,
         max_runtime_ms: Some(600_000),
+        max_rss_mb: None,
         env: [("RUST_LOG".into(), "debug".into())].into(),
         after: Some("db".into()),
         cwd: None,

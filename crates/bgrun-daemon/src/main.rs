@@ -43,8 +43,59 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "orphan re-adoption failed");
     }
 
-    // Shared sysinfo system for resource monitoring (avoids per-call allocation)
-    let sysinfo_system = Arc::new(Mutex::new(sysinfo::System::new()));
+    // Spawn the reactive, event-driven auto-shutdown monitor (0% idle polling)
+    let store_clone = store.clone();
+    let socket_path_clone = socket_path.clone();
+    tokio::spawn(async move {
+        use crate::runner::LIFECYCLE_NOTIFY;
+
+        let timeout_seconds = std::env::var("BGRUN_IDLE_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+
+        tracing::info!(
+            timeout_secs = timeout_seconds,
+            "reactive auto-shutdown monitor initialized (0% idle polling)"
+        );
+
+        loop {
+            let active_count = {
+                let store_ref = store_clone.lock().await;
+                store_ref
+                    .list_workspace(None)
+                    .iter()
+                    .filter(|j| j.is_alive())
+                    .count()
+            };
+
+            if active_count > 0 {
+                LIFECYCLE_NOTIFY.notified().await;
+            } else {
+                tokio::select! {
+                    _ = LIFECYCLE_NOTIFY.notified() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds)) => {
+                        let final_count = {
+                            let store_ref = store_clone.lock().await;
+                            store_ref
+                                .list_workspace(None)
+                                .iter()
+                                .filter(|j| j.is_alive())
+                                .count()
+                        };
+                        if final_count == 0 {
+                            tracing::info!(
+                                timeout_secs = timeout_seconds,
+                                "idle timeout reached reactively, initiating graceful auto-shutdown"
+                            );
+                            let _ = tokio::fs::remove_file(&socket_path_clone).await;
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     info!(
         socket = %socket_path.display(),
@@ -52,7 +103,7 @@ async fn main() -> Result<()> {
         "daemon starting"
     );
 
-    server::run_server(socket_path, store, sysinfo_system).await
+    server::run_server(socket_path, store).await
 }
 
 /// Spawns this executable as a detached daemon process.

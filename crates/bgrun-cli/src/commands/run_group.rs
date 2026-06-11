@@ -33,6 +33,7 @@ pub async fn run_group(names: Vec<String>) -> Result<()> {
                 restart: None,
                 pty: false,
                 max_runtime_ms: None,
+                max_rss_mb: None,
                 env: std::collections::HashMap::new(),
                 after: None,
                 cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),

@@ -1,10 +1,12 @@
 pub mod attach;
 pub mod diff;
+pub mod interactive;
 pub mod expect;
 pub mod kill;
 pub mod list;
 pub mod run;
 pub mod run_group;
+pub mod schema;
 pub mod send;
 pub mod skill;
 pub mod stats;

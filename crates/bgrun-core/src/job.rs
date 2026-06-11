@@ -40,6 +40,7 @@ pub struct Job {
     pub restart: Option<RestartPolicy>,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
+    pub max_rss_mb: Option<u64>,
     pub env: HashMap<String, String>,
 }
 
@@ -67,6 +68,7 @@ impl Job {
             restart: None,
             pty: false,
             max_runtime_ms: None,
+            max_rss_mb: None,
             env: HashMap::new(),
         }
     }
@@ -124,6 +126,7 @@ impl Job {
             restart: self.restart.clone(),
             pty: self.pty,
             max_runtime_ms: self.max_runtime_ms,
+            max_rss_mb: self.max_rss_mb,
             env: self.env.clone(),
         }
     }

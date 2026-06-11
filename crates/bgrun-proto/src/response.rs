@@ -26,6 +26,8 @@ pub struct JobRecord {
     pub max_runtime_ms: Option<u64>,
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     pub env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_rss_mb: Option<u64>,
 }
 
 /// Helper for serde skip_serializing_if on bool fields.

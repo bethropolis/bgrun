@@ -9,3 +9,4 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 directories = { workspace = true }
 libc = "0.2"
+schemars = { workspace = true }

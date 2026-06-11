@@ -14,6 +14,10 @@ use tracing::{error, info};
 
 use crate::state;
 
+/// Shared sysinfo::System instance for resource monitoring.
+static SYSINFO_SYSTEM: once_cell::sync::Lazy<Arc<std::sync::Mutex<sysinfo::System>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(std::sync::Mutex::new(sysinfo::System::new())));
+
 /// Global map of job IDs to their stdin handles (piped mode).
 pub static STDIN_HANDLES: once_cell::sync::Lazy<
     Mutex<HashMap<String, tokio::process::ChildStdin>>,
@@ -35,6 +39,11 @@ pub static PTY_PAIRS: once_cell::sync::Lazy<
 pub static JOB_BROADCASTS: once_cell::sync::Lazy<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<Vec<u8>>>>,
 > = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Notify trigger for the reactive auto-shutdown monitor.
+/// Called whenever a job spawns or exits.
+pub static LIFECYCLE_NOTIFY: once_cell::sync::Lazy<tokio::sync::Notify> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Notify::new());
 
 /// Spawns a new job process and returns its record.
 pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<JobRecord> {
@@ -144,6 +153,7 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
     job.restart = args.restart.clone();
     job.pty = args.pty;
     job.max_runtime_ms = args.max_runtime_ms;
+    job.max_rss_mb = args.max_rss_mb;
     job.env = args.env.clone();
 
     state::write_meta(&job).await?;
@@ -193,7 +203,17 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
         });
     }
 
+    // Spawn memory limit monitor if configured
+    if let Some(max_rss_mb) = args.max_rss_mb {
+        let store_clone = store.clone();
+        let id_clone = id.clone();
+        tokio::spawn(async move {
+            monitor_memory_limit(id_clone, max_rss_mb, store_clone).await;
+        });
+    }
+
     info!(pid, id = %id, cmd = %cmd.join(" "), "job spawned");
+    LIFECYCLE_NOTIFY.notify_one();
     Ok(record)
 }
 
@@ -276,6 +296,7 @@ async fn handle_job_exit(
         let _ = state::write_status(&job).await;
         info!(id = %id, state = %job.state.to_string(), "job exited");
     }
+    LIFECYCLE_NOTIFY.notify_one();
 }
 
 /// Monitors a piped child process and calls handle_job_exit on exit.
@@ -432,6 +453,7 @@ async fn spawn_pty_job(
     job.restart = args.restart.clone();
     job.pty = true;
     job.max_runtime_ms = args.max_runtime_ms;
+    job.max_rss_mb = args.max_rss_mb;
     job.env = args.env.clone();
 
     state::write_meta(&job).await?;
@@ -480,18 +502,31 @@ async fn spawn_pty_job(
         });
     }
 
+    // Spawn memory limit monitor if configured
+    if let Some(max_rss_mb) = args.max_rss_mb {
+        let store_clone = store.clone();
+        let id_clone = id.clone();
+        tokio::spawn(async move {
+            monitor_memory_limit(id_clone, max_rss_mb, store_clone).await;
+        });
+    }
+
     info!(pid, id = %id, cmd = %cmd.join(" "), "job spawned (pty)");
+    LIFECYCLE_NOTIFY.notify_one();
     Ok(record)
 }
 
 /// Kills a job by its ID. Sends SIGTERM to the process group, then SIGKILL after 5s.
-pub async fn kill_job(id: &str, store: Arc<Mutex<JobStore>>) -> Result<()> {
-    let (pid, is_alive) = {
+pub async fn kill_job(id_or_name: &str, store: Arc<Mutex<JobStore>>) -> Result<()> {
+    let (pid, is_alive, id) = {
         let store_ref = store.lock().await;
-        let job = store_ref
-            .get(id)
+        let actual_id = store_ref
+            .resolve_id(id_or_name)
             .ok_or_else(|| anyhow::anyhow!("job not found"))?;
-        (job.pid, job.is_alive())
+        let job = store_ref
+            .get(&actual_id)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        (job.pid, job.is_alive(), actual_id)
     };
 
     let pid = pid.ok_or_else(|| anyhow::anyhow!("job has no pid"))?;
@@ -504,7 +539,7 @@ pub async fn kill_job(id: &str, store: Arc<Mutex<JobStore>>) -> Result<()> {
     killpg(pgid, Signal::SIGTERM).context("failed to send SIGTERM")?;
 
     // Spawn task to SIGKILL after 5s if still alive
-    let id_clone = id.to_string();
+    let id_clone = id.clone();
     let store_clone = store.clone();
     tokio::spawn(async move {
         sleep(Duration::from_secs(5)).await;
@@ -524,7 +559,7 @@ pub async fn kill_job(id: &str, store: Arc<Mutex<JobStore>>) -> Result<()> {
     // Update state
     let job = {
         let mut store = store.lock().await;
-        if let Some(job) = store.get_mut(id) {
+        if let Some(job) = store.get_mut(&id) {
             let _ = job.transition(JobState::Killed);
             Some(job.clone())
         } else {
@@ -597,10 +632,9 @@ async fn resolve_job_id(
 
     // Resolve name to ID from the store
     let store_ref = store.lock().await;
-    let resolved = store_ref
-        .find_by_name(id_or_name)
+    let id = store_ref
+        .resolve_id(id_or_name)
         .ok_or_else(|| anyhow::anyhow!("job '{}' not found", id_or_name))?;
-    let id = resolved.id.clone();
     drop(store_ref);
 
     // Verify the resolved ID has a handle
@@ -620,19 +654,21 @@ async fn resolve_job_id(
 
 /// Returns resource stats for a running process using the shared sysinfo instance.
 pub async fn get_stats(
-    id: &str,
+    id_or_name: &str,
     store: Arc<Mutex<JobStore>>,
-    sys: Arc<Mutex<sysinfo::System>>,
 ) -> Result<bgrun_proto::ResourceStats> {
     let pid = {
         let store_ref = store.lock().await;
+        let actual_id = store_ref
+            .resolve_id(id_or_name)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
         store_ref
-            .get(id)
+            .get(&actual_id)
             .and_then(|j| j.pid)
-            .ok_or_else(|| anyhow::anyhow!("job not found or has no pid"))?
+            .ok_or_else(|| anyhow::anyhow!("job has no pid"))?
     };
 
-    let mut sys = sys.lock().await;
+    let mut sys = SYSINFO_SYSTEM.lock().unwrap();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
 
     let sysinfo_pid = sysinfo::Pid::from_u32(pid);
@@ -646,6 +682,39 @@ pub async fn get_stats(
         rss_mb,
         uptime_secs,
     })
+}
+
+/// Returns the RSS in KB for a given PID, or None if the process is gone.
+fn get_process_rss_kb(pid: u32) -> Option<u64> {
+    let mut sys = SYSINFO_SYSTEM.lock().unwrap();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+    sys.process(sysinfo::Pid::from_u32(pid))
+        .map(|p| p.memory())
+}
+
+/// Monitors a job's RSS every second and kills it if it exceeds max_rss_mb.
+async fn monitor_memory_limit(
+    id: String,
+    max_rss_mb: u64,
+    store: Arc<Mutex<JobStore>>,
+) {
+    loop {
+        sleep(Duration::from_secs(1)).await;
+        let pid = {
+            let store_ref = store.lock().await;
+            store_ref.get(&id).and_then(|j| j.pid)
+        };
+        let Some(pid) = pid else { break };
+        let rss_kb = get_process_rss_kb(pid);
+        if let Some(rss_kb) = rss_kb {
+            let rss_mb = rss_kb / 1024;
+            if rss_mb > max_rss_mb {
+                tracing::warn!(id = %id, rss_mb, max_rss_mb, "memory limit exceeded, killing job");
+                let _ = kill_job(&id, store.clone()).await;
+                break;
+            }
+        }
+    }
 }
 
 /// Reads from a child's stdout/stderr pipe and appends to the log file,

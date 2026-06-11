@@ -1,10 +1,11 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::types::{ReadinessStrategy, RestartPolicy};
 
 /// Arguments for the Run command.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct RunArgs {
     pub cmd: Vec<String>,
     pub name: Option<String>,
@@ -22,17 +23,19 @@ pub struct RunArgs {
     pub pty_cols: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pty_rows: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_rss_mb: Option<u64>,
 }
 
 /// Arguments for the Kill command.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct KillArgs {
     pub id: Option<String>,
     pub workspace: Option<String>,
 }
 
 /// Arguments for the Tail command.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct TailArgs {
     pub id: String,
     pub lines: usize,
@@ -43,7 +46,7 @@ pub struct TailArgs {
 }
 
 /// All commands the daemon can handle.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 #[serde(tag = "command", content = "args")]
 pub enum Command {
     Run(RunArgs),
