@@ -8,11 +8,9 @@ use tokio::net::UnixStream;
 
 const ESCAPE_P: u8 = 0x10;
 const ESCAPE_Q: u8 = 0x11;
-const CTRL_C: u8 = 0x03;
-
 /// Attach to a PTY job's stdin/stdout interactively.
 ///
-/// Ctrl+P then Ctrl+Q, or Ctrl+C alone, detaches the client (the job continues running).
+/// Ctrl+P then Ctrl+Q detaches the client (the job continues running).
 pub async fn attach_job(id: String) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
 
@@ -52,6 +50,12 @@ pub async fn attach_job(id: String) -> Result<()> {
             .unwrap_or("attach failed");
         anyhow::bail!("{}", err);
     }
+
+    // Notify user of interactive instructions before switching terminal modes
+    println!(
+        "Attaching to job '{}'. Press Ctrl+P followed by Ctrl+Q to detach.",
+        id
+    );
 
     // Enable raw mode with safety guard (restores terminal even on panic)
     let _guard = RawModeGuard::new()?;
@@ -117,9 +121,9 @@ async fn run_attach_loop(
 }
 
 /// Reads bytes from stdin and writes them to the socket.
-/// Ctrl+P then Ctrl+Q, or Ctrl+C alone, detaches (returns Ok).
-/// Uses a larger buffer (1 KiB) for throughput with a non-blocking
-/// state machine to handle the escape sequence.
+/// Ctrl+P then Ctrl+Q detaches (returns Ok). All other bytes including
+/// Ctrl+C (0x03) are forwarded to the PTY so the remote process receives
+/// real terminal signals.
 async fn forward_stdin(writer: &mut tokio::io::WriteHalf<UnixStream>) -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut buf = [0u8; 1024];
@@ -131,10 +135,6 @@ async fn forward_stdin(writer: &mut tokio::io::WriteHalf<UnixStream>) -> Result<
             Ok(n) => {
                 let mut write_buf = Vec::with_capacity(n);
                 for &b in &buf[..n] {
-                    if b == CTRL_C {
-                        // Ctrl+C alone detaches immediately
-                        return Ok(());
-                    }
                     if ctrl_p_pressed {
                         if b == ESCAPE_Q {
                             return Ok(());

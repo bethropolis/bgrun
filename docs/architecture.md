@@ -60,7 +60,20 @@ This ensures no monitoring gap after a daemon restart.
 
 ### Shutdown
 
-The daemon runs until killed (`pkill bgrun-daemon`). On restart via the CLI, the new instance re-adopts orphaned children as described above. There is no graceful shutdown signal handler — jobs are re-adopted after restart.
+The daemon runs until killed (`pkill bgrun-daemon`) or an idle timeout expires. On restart via the CLI, the new instance re-adopts orphaned children as described above.
+
+### Reactive idle auto-shutdown
+
+The daemon spawns a background monitor that uses `tokio::sync::Notify` for **zero-CPU idle polling**:
+
+1. A global `LIFECYCLE_NOTIFY` static is defined in `runner.rs`.
+2. Every job spawn (`spawn_job`, `spawn_pty_job`) and job exit (`handle_job_exit`) calls `.notify_one()`.
+3. The monitor loop:
+   - **Active jobs > 0**: parks indefinitely on `.notified().await` — 0 CPU usage.
+   - **Active jobs = 0**: races `.notified()` against `BGRUN_IDLE_TIMEOUT` (default 60s).
+4. On timeout expiry, the socket file is deleted and the process exits.
+
+This replaces any periodic polling approach, ensuring the daemon consumes no CPU while idle.
 
 ---
 
@@ -93,16 +106,19 @@ Every request gets exactly one response line. The response format is:
 
 | Command | Request args | Response data |
 |---|---|---|
-| `Run` | `RunArgs { cmd, name, workspace, readiness, restart, pty, max_runtime_ms, env, after }` | `JobRecord` |
+| `Run` | `RunArgs { cmd, name, workspace, readiness, restart, pty, max_runtime_ms, max_rss_mb, env, after, cwd, pty_cols, pty_rows }` | `JobRecord` |
 | `RunGroup` | `{ jobs: Vec<RunArgs> }` | `Vec<JobRecord>` |
 | `Status` | `{ id }` | `JobStatus` |
 | `List` | `{ workspace? }` | `Vec<JobRecord>` |
 | `Kill` | `{ id?, workspace? }` | `{ killed: Vec<String> }` |
-| `Tail` | `{ id, lines, digest, level? }` | `{ lines: Vec<LogLine> }` or `LogDigest` |
-| `Diff` | `{ id }` | `{ cursor: u64, lines: Vec<LogLine> }` |
+| `Tail` | `{ id, lines, digest, level?, strip_ansi }` | `{ lines: Vec<LogLine> }` or `LogDigest` |
+| `Diff` | `{ id, lines?, strip_ansi }` | `{ cursor: u64, lines: Vec<LogLine> }` |
 | `Wait` | `{ id, timeout_ms }` | `WaitResult { ready: bool, elapsed_ms: u64 }` |
 | `Send` | `{ id, data }` | `{ ok: true }` |
 | `Stats` | `{ id }` | `ResourceStats { cpu_pct, rss_mb, uptime_secs }` |
+| `Attach` | `{ id }` | hijacks socket for raw byte streaming |
+| `Expect` | `{ id, pattern, is_regex, timeout_ms }` | `{ matched: bool, line_number, content }` |
+| `ResizePty` | `{ id, cols, rows }` | `{ resized: true }` |
 
 ---
 
@@ -117,7 +133,9 @@ Every request gets exactly one response line. The response format is:
 5. **Stdin handle**: stored in a global `HashMap<String, ChildStdin>` keyed by job ID.
 6. **Ready check**: if `readiness` is set, spawn a background task that polls every 200ms up to 60s.
 7. **Max runtime**: if `max_runtime_ms` is set, a tokio sleep task fires after the duration, killing the job if still alive.
-8. **Persist**: write `meta.json` (full `JobRecord`) and `status.json` to disk.
+8. **Memory limit**: if `max_rss_mb` is set, a background task polls RSS every 1s and kills the job if exceeded.
+9. **Lifecycle notify**: `LIFECYCLE_NOTIFY.notify_one()` is called to wake the auto-shutdown monitor.
+10. **Persist**: write `meta.json` (full `JobRecord`) and `status.json` to disk.
 
 ### Monitor
 
@@ -160,7 +178,7 @@ Jobs are persisted to disk under `$XDG_DATA_DIR/bgrun/jobs/$ID/`:
 
 ```
 jobs/abc123/
-├── meta.json     # Full JobRecord (cmd, name, workspace, pid, state, readiness, restart, pty, max_runtime, env)
+├── meta.json     # Full JobRecord (cmd, name, workspace, pid, state, readiness, restart, pty, max_runtime, max_rss_mb, env)
 ├── status.json   # Current state, exit_code, ready_at, restart_count, cursor
 └── stdout.log    # Captured stdout/stderr (rotated at 50MB → stdout.log.1)
 ```
@@ -175,14 +193,39 @@ An audit log at `$XDG_DATA_DIR/bgrun/audit.log` records daemon startup timestamp
 
 ## Resource monitoring
 
-`sysinfo::System` is created once at daemon startup and stored as `Arc<Mutex<System>>`. Every `stats` call refreshes the shared instance and reads per-process CPU/RSS/uptime:
+A global `SYSINFO_SYSTEM` static (`once_cell::sync::Lazy<Arc<Mutex<System>>>`) is initialized once in `runner.rs`. Both `get_stats` and the memory monitor share this single instance, avoiding per-call allocation:
 
 ```rust
-let mut sys = sys.lock().await;
+let mut sys = SYSINFO_SYSTEM.lock().unwrap();
 sys.refresh_processes(ProcessesToUpdate::All);
 let proc = sys.process(Pid::from_u32(pid));
 // proc.cpu_usage(), proc.memory(), proc.run_time()
 ```
+
+### Memory RSS guardrails
+
+When `--max-rss <MB>` is passed to `bgrun run`, the daemon spawns `monitor_memory_limit()` — a tokio task that polls RSS every 1 second. If the process exceeds the limit, it is killed through the normal kill flow (SIGTERM → SIGKILL).
+
+The `max_rss_mb` value is persisted in `meta.json` and restored on daemon restart, so memory limits survive reboots.
+
+---
+
+## Tool schemas
+
+`bgrun schema <command>` prints JSON Schema (draft-07) for any command's argument struct using the `schemars` crate. The derive macros are on `RunArgs`, `KillArgs`, `TailArgs`, `Command`, `ReadinessStrategy`, and `RestartPolicy` in `bgrun-proto`.
+
+This allows AI agents to discover expected input shapes at runtime without hardcoded tool definitions.
+
+---
+
+## ID resolution
+
+`JobStore::resolve_id()` accepts three formats:
+1. **Full UUID** — exact match against the job's canonical ID.
+2. **Job name** — exact match against the name index (`--name`).
+3. **Unique prefix** — at least 4 characters matching exactly one job's UUID.
+
+This is called at the start of every daemon handler, so `bgrun tail abc1`, `bgrun status my-server`, and `bgrun kill 55f3a` all work transparently.
 
 ---
 

@@ -6,6 +6,7 @@ use bgrun_proto::JobState;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::state::LIFECYCLE_NOTIFY;
 use crate::state;
 
 /// Re-adopts previously running jobs from disk.
@@ -82,6 +83,9 @@ async fn poll_adopted_job(id: String, pid: u32, store: Arc<Mutex<JobStore>>) {
                     job.exit_code = Some(-1);
                     let _ = job.transition(JobState::Crashed);
                     let _ = state::write_status(job).await;
+
+                    // Notify the reactive shutdown loop to check active task count
+                    LIFECYCLE_NOTIFY.notify_one();
                 }
             }
             return;
