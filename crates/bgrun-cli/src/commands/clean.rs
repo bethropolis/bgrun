@@ -1,27 +1,28 @@
 use anyhow::Result;
-use bgrun_proto::{Command, JobRecord};
+use bgrun_proto::Command;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
-use crate::output::{output_mode, print_jobs};
 
-/// Lists all jobs, optionally filtered by workspace.
-pub async fn list(workspace: Option<String>, json: bool) -> Result<()> {
+/// Removes all terminal-state (crashed/exited/killed) jobs.
+pub async fn clean(workspace: Option<String>) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
     let mut client = DaemonClient::connect(&socket_path).await?;
 
     let response = client
-        .send::<Vec<JobRecord>>(Command::List { workspace })
+        .send::<serde_json::Value>(Command::Clean { workspace })
         .await?;
 
     if !response.ok {
         anyhow::bail!("{}", response.error.unwrap_or_default());
     }
 
-    let records = response.data.unwrap_or_default();
-    print_jobs(&records, output_mode(json))?;
+    if let Some(data) = response.data {
+        let removed = data["removed"].as_u64().unwrap_or(0);
+        println!("Removed {removed} terminated job(s).");
+    }
 
     Ok(())
 }

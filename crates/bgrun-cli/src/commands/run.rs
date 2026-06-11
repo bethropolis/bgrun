@@ -29,6 +29,7 @@ pub async fn run(
     mut name: Option<String>,
     mut workspace: Option<String>,
     mut flags: RunFlags,
+    json: bool,
 ) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
@@ -109,7 +110,7 @@ pub async fn run(
     }
 
     if let Some(record) = response.data {
-        print_job(&record, output_mode())?;
+        print_job(&record, output_mode(json))?;
     }
 
     Ok(())

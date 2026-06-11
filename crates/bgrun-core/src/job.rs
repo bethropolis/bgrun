@@ -36,12 +36,14 @@ pub struct Job {
     pub exit_code: Option<i32>,
     pub restart_count: u32,
     pub last_diff_cursor: u64,
+    pub consecutive_failures: u32,
     pub readiness: Option<ReadinessStrategy>,
     pub restart: Option<RestartPolicy>,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
     pub max_rss_mb: Option<u64>,
     pub env: HashMap<String, String>,
+    pub cwd: Option<String>,
 }
 
 impl Job {
@@ -64,12 +66,14 @@ impl Job {
             exit_code: None,
             restart_count: 0,
             last_diff_cursor: 0,
+            consecutive_failures: 0,
             readiness: None,
             restart: None,
             pty: false,
             max_runtime_ms: None,
             max_rss_mb: None,
             env: HashMap::new(),
+            cwd: None,
         }
     }
 
@@ -128,6 +132,7 @@ impl Job {
             max_runtime_ms: self.max_runtime_ms,
             max_rss_mb: self.max_rss_mb,
             env: self.env.clone(),
+            cwd: self.cwd.clone(),
         }
     }
 }

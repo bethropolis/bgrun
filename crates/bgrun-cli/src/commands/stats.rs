@@ -6,7 +6,7 @@ use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Shows resource stats for a running job.
-pub async fn stats(id: String) -> Result<()> {
+pub async fn stats(id: String, json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -21,7 +21,7 @@ pub async fn stats(id: String) -> Result<()> {
     }
 
     if let Some(stats) = response.data {
-        match output_mode() {
+        match output_mode(json) {
             crate::output::OutputMode::Human => {
                 println!("Job:    {id}");
                 println!("CPU:    {:.1}%", stats.cpu_pct);

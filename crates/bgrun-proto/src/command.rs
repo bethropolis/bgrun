@@ -43,6 +43,15 @@ pub struct TailArgs {
     pub level: Option<String>,
     #[serde(default)]
     pub strip_ansi: bool,
+    /// Filter by stream source: "stdout", "stderr", "pty". None = all.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stream: Option<String>,
+    /// Byte cursor for follow mode (return lines after this offset).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cursor: Option<u64>,
+    /// If true, response includes a cursor for follow-up polling.
+    #[serde(default)]
+    pub follow: bool,
 }
 
 /// All commands the daemon can handle.
@@ -59,6 +68,9 @@ pub enum Command {
         lines: Option<usize>,
         #[serde(default)]
         strip_ansi: bool,
+        /// Filter by stream source: "stdout", "stderr", "pty". None = all.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        stream: Option<String>,
     },
     Wait { id: String, timeout_ms: u64 },
     Send { id: String, data: String },
@@ -72,6 +84,8 @@ pub enum Command {
     },
     Attach { id: String },
     ResizePty { id: String, cols: u16, rows: u16 },
+    /// Remove all terminal-state (crashed/exited/killed) jobs.
+    Clean { workspace: Option<String> },
 }
 
 /// A request sent from CLI to daemon.

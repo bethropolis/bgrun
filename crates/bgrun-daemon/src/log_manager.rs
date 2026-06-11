@@ -21,18 +21,20 @@ pub struct DiskLogEntry {
 /// Expected format: `{"t":"2026-06-01T10:32:00.123Z","s":"stdout","c":"content here"}`
 /// Falls back to treating the raw line as content if parsing fails
 /// (e.g. for legacy logs or empty lines).
-fn parse_line(raw: &str) -> (Option<String>, String) {
+/// Returns (timestamp, stream, content).
+fn parse_line(raw: &str) -> (Option<String>, Option<String>, String) {
     if let Ok(entry) = serde_json::from_str::<DiskLogEntry>(raw.trim()) {
-        return (Some(entry.t), entry.c);
+        return (Some(entry.t), Some(entry.s), entry.c);
     }
-    (None, raw.to_string())
+    (None, None, raw.to_string())
 }
 
-/// Returns the last `n` lines from the job's stdout.log.
+/// Returns the last `n` lines from the job's stdout.log, optionally filtered
+/// by stream source ("stdout", "stderr", "pty", or None for all).
 ///
 /// First pass counts lines and tracks newline byte offsets as a ring buffer of N+1.
 /// Second pass reads only the needed portion from disk.
-pub async fn tail_lines(id: &str, n: usize) -> Result<Vec<LogLine>> {
+pub async fn tail_lines(id: &str, n: usize, stream_filter: Option<&str>) -> Result<Vec<LogLine>> {
     let path = state::job_dir(id).join("stdout.log");
     let mut file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
         Ok(f) => f,
@@ -86,13 +88,18 @@ pub async fn tail_lines(id: &str, n: usize) -> Result<Vec<LogLine>> {
     let result: Vec<LogLine> = lines
         .iter()
         .enumerate()
-        .map(|(i, line)| {
-            let (timestamp, content) = parse_line(line);
-            LogLine {
+        .filter_map(|(i, line)| {
+            let (timestamp, stream, content) = parse_line(line);
+            if let Some(filter) = stream_filter {
+                if stream.as_deref() != Some(filter) {
+                    return None;
+                }
+            }
+            Some(LogLine {
                 line_number: line_offset + i as u64,
                 content,
                 timestamp,
-            }
+            })
         })
         .collect();
 
@@ -132,7 +139,7 @@ pub async fn tail_digest(id: &str) -> Result<LogDigest> {
                     line_number += 1;
                     total_lines += 1;
                     let line = String::from_utf8_lossy(&partial_line);
-                    let (_, content) = parse_line(&line);
+                    let (_, _, content) = parse_line(&line);
                     process_line(
                         &content,
                         line_number,
@@ -156,7 +163,7 @@ pub async fn tail_digest(id: &str) -> Result<LogDigest> {
                     let mut line_bytes = partial_line.clone();
                     line_bytes.extend_from_slice(&buf[start..i]);
                     let line = String::from_utf8_lossy(&line_bytes);
-                    let (_, content) = parse_line(&line);
+                    let (_, _, content) = parse_line(&line);
                     process_line(
                         &content,
                     line_number,
@@ -202,7 +209,8 @@ fn process_line(
 }
 
 /// Returns lines added after the given byte cursor, and the new cursor position.
-pub async fn diff_since(id: &str, cursor: u64) -> Result<(Vec<LogLine>, u64)> {
+/// Optionally filters by stream source ("stdout", "stderr", "pty", or None for all).
+pub async fn diff_since(id: &str, cursor: u64, stream_filter: Option<&str>) -> Result<(Vec<LogLine>, u64)> {
     let path = state::job_dir(id).join("stdout.log");
     let mut file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
         Ok(f) => f,
@@ -237,13 +245,18 @@ pub async fn diff_since(id: &str, cursor: u64) -> Result<(Vec<LogLine>, u64)> {
     let lines: Vec<LogLine> = content
         .lines()
         .enumerate()
-        .map(|(i, line)| {
-            let (timestamp, content) = parse_line(line);
-            LogLine {
+        .filter_map(|(i, line)| {
+            let (timestamp, stream, content) = parse_line(line);
+            if let Some(filter) = stream_filter {
+                if stream.as_deref() != Some(filter) {
+                    return None;
+                }
+            }
+            Some(LogLine {
                 line_number: line_offset + i as u64 + 1,
                 content,
                 timestamp,
-            }
+            })
         })
         .collect();
 

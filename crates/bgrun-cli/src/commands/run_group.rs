@@ -8,7 +8,7 @@ use crate::output::{output_mode, print_jobs};
 /// Runs multiple named jobs in parallel.
 ///
 /// Each name is resolved through bgrun.toml if found; otherwise used as a raw command.
-pub async fn run_group(names: Vec<String>) -> Result<()> {
+pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -52,7 +52,7 @@ pub async fn run_group(names: Vec<String>) -> Result<()> {
     }
 
     if let Some(records) = response.data {
-        print_jobs(&records, output_mode())?;
+        print_jobs(&records, output_mode(json))?;
     }
 
     Ok(())

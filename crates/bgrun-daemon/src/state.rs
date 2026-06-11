@@ -5,6 +5,11 @@ use bgrun_core::Job;
 use bgrun_proto::{JobRecord, JobStatus};
 use chrono::{DateTime, Utc};
 
+/// Notify trigger for the reactive auto-shutdown monitor.
+/// Called whenever a job spawns or exits.
+pub static LIFECYCLE_NOTIFY: once_cell::sync::Lazy<tokio::sync::Notify> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Notify::new());
+
 /// Writes durable metadata for a job.
 pub async fn write_meta(job: &Job) -> Result<()> {
     let dir = job_dir(&job.id);
@@ -29,6 +34,7 @@ pub async fn write_status(job: &Job) -> Result<()> {
         ready_at: job.ready_at.map(|t| t.to_rfc3339()),
         restart_count: job.restart_count,
         last_diff_cursor: job.last_diff_cursor,
+        consecutive_failures: job.consecutive_failures,
     };
     let json = serde_json::to_string_pretty(&status)?;
     tokio::fs::write(dir.join("status.json"), json)
@@ -113,13 +119,40 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         job.exit_code = status.as_ref().and_then(|status| status.exit_code);
         job.restart_count = status.as_ref().map_or(0, |status| status.restart_count);
         job.last_diff_cursor = status.as_ref().map_or(0, |status| status.last_diff_cursor);
+        job.consecutive_failures = status.as_ref().map_or(0, |status| status.consecutive_failures);
         job.readiness = record.readiness;
         job.restart = record.restart;
         job.pty = record.pty;
         job.max_runtime_ms = record.max_runtime_ms;
         job.max_rss_mb = record.max_rss_mb;
         job.env = record.env;
+        job.cwd = record.cwd;
         jobs.push(job);
+    }
+
+    // Dedup: for named jobs, keep only the latest entry by started_at.
+    // This cleans up stale duplicates left by earlier restart logic.
+    let mut best: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut stale: Vec<usize> = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        if let Some(ref name) = job.name {
+            if let Some(&prev) = best.get(name) {
+                if job.started_at > jobs[prev].started_at {
+                    stale.push(prev);
+                    best.insert(name.clone(), i);
+                } else {
+                    stale.push(i);
+                }
+            } else {
+                best.insert(name.clone(), i);
+            }
+        }
+    }
+    for &i in &stale {
+        let _ = tokio::fs::remove_dir_all(job_dir(&jobs[i].id)).await;
+    }
+    for &i in stale.iter().rev() {
+        jobs.remove(i);
     }
 
     Ok(jobs)

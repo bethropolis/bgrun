@@ -173,6 +173,9 @@ async fn test_tail_args_serialization() {
         digest: true,
         level: Some("error".into()),
         strip_ansi: false,
+        stream: None,
+        cursor: None,
+        follow: false,
     };
     let json = serde_json::to_string(&args).unwrap();
     let parsed: TailArgs = serde_json::from_str(&json).unwrap();
