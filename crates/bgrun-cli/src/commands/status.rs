@@ -6,7 +6,7 @@ use crate::client::DaemonClient;
 use crate::output::{output_mode, print_status};
 
 /// Gets the status of a specific job by ID.
-pub async fn status(id: String) -> Result<()> {
+pub async fn status(id: String, json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -19,7 +19,7 @@ pub async fn status(id: String) -> Result<()> {
     }
 
     if let Some(status) = response.data {
-        print_status(&status, output_mode())?;
+        print_status(&status, output_mode(json))?;
     }
 
     Ok(())

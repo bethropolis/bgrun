@@ -21,7 +21,7 @@ fn parse_duration_ms(s: &str) -> Result<u64> {
 }
 
 /// Waits for a job to become ready or until timeout.
-pub async fn wait(id: String, timeout: String) -> Result<()> {
+pub async fn wait(id: String, timeout: String, json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -29,7 +29,7 @@ pub async fn wait(id: String, timeout: String) -> Result<()> {
 
     let timeout_ms = parse_duration_ms(&timeout)?;
 
-    if output_mode() == crate::output::OutputMode::Human {
+    if output_mode(json) == crate::output::OutputMode::Human {
         eprintln!("Waiting for job {} (timeout: {})...", id, timeout);
     }
 
@@ -45,7 +45,7 @@ pub async fn wait(id: String, timeout: String) -> Result<()> {
     }
 
     if let Some(result) = response.data {
-        match output_mode() {
+        match output_mode(json) {
             crate::output::OutputMode::Human => {
                 if result.ready {
                     println!("Job {} is ready ({}ms)", id, result.elapsed_ms);

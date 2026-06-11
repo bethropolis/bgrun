@@ -8,12 +8,12 @@ pub enum OutputMode {
     Json,
 }
 
-/// Detects the output mode based on whether stdout is a terminal.
-pub fn output_mode() -> OutputMode {
-    if is_terminal::IsTerminal::is_terminal(&std::io::stdout()) {
-        OutputMode::Human
-    } else {
+/// Returns the output mode. Defaults to Human; callers pass `--json` flag to force Json.
+pub fn output_mode(force_json: bool) -> OutputMode {
+    if force_json {
         OutputMode::Json
+    } else {
+        OutputMode::Human
     }
 }
 

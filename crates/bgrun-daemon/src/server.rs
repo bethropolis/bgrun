@@ -323,6 +323,7 @@ async fn dispatch(
                         ready_at: job.ready_at.map(|t| t.to_rfc3339()),
                         restart_count: job.restart_count,
                         last_diff_cursor: job.last_diff_cursor,
+                        consecutive_failures: job.consecutive_failures,
                     };
                     match serde_json::to_value(status) {
                         Ok(val) => Response::ok(req_id.clone(), val),
@@ -453,6 +454,9 @@ async fn dispatch(
             digest,
             level,
             strip_ansi,
+            stream,
+            cursor: cursor_opt,
+            follow,
         }) => {
             // Resolve name to UUID
             let job_id = {
@@ -463,6 +467,7 @@ async fn dispatch(
                 Some(jid) => jid,
                 None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
             };
+            let stream_deref = stream.as_deref();
             if digest {
                 match bgrun_daemon::log_manager::tail_digest(&job_id).await {
                     Ok(digest) => match serde_json::to_value(digest) {
@@ -473,8 +478,32 @@ async fn dispatch(
                     },
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
+            } else if let Some(cursor) = cursor_opt {
+                // Cursor-based read for follow mode
+                match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream_deref).await {
+                    Ok((mut log_lines, new_cursor)) => {
+                        // Strip ANSI escape codes if requested
+                        if strip_ansi {
+                            for line in &mut log_lines {
+                                let clean = strip_ansi_escapes::strip(line.content.as_bytes());
+                                line.content = String::from_utf8_lossy(&clean).into_owned();
+                            }
+                        }
+                        let lines_json = serde_json::json!({
+                            "lines": log_lines,
+                            "cursor": new_cursor,
+                        });
+                        match serde_json::to_value(lines_json) {
+                            Ok(val) => Response::ok(req_id.clone(), val),
+                            Err(e) => {
+                                Response::err(req_id.clone(), format!("serialization error: {}", e))
+                            }
+                        }
+                    }
+                    Err(e) => Response::err(req_id.clone(), e.to_string()),
+                }
             } else {
-                match bgrun_daemon::log_manager::tail_lines(&job_id, lines).await {
+                match bgrun_daemon::log_manager::tail_lines(&job_id, lines, stream_deref).await {
                     Ok(mut log_lines) => {
                         // Filter by level if specified
                         if let Some(ref lvl) = level {
@@ -489,10 +518,16 @@ async fn dispatch(
                                 line.content = String::from_utf8_lossy(&clean).into_owned();
                             }
                         }
-                        let lines_json = serde_json::json!({
+                        // Get file size for cursor if follow mode
+                        let log_path = bgrun_daemon::state::job_dir(&job_id).join("stdout.log");
+                        let file_size = get_file_size(&log_path).await;
+                        let mut result = serde_json::json!({
                             "lines": log_lines,
                         });
-                        match serde_json::to_value(lines_json) {
+                        if follow {
+                            result["cursor"] = serde_json::json!(file_size);
+                        }
+                        match serde_json::to_value(result) {
                             Ok(val) => Response::ok(req_id.clone(), val),
                             Err(e) => {
                                 Response::err(req_id.clone(), format!("serialization error: {}", e))
@@ -507,6 +542,7 @@ async fn dispatch(
             id,
             lines,
             strip_ansi,
+            stream,
         } => {
             // Resolve name to UUID
             let job_id = {
@@ -522,7 +558,7 @@ async fn dispatch(
                 let store_ref = store.lock().await;
                 store_ref.get(&job_id).map_or(0, |job| job.last_diff_cursor)
             };
-            match bgrun_daemon::log_manager::diff_since(&job_id, cursor).await {
+            match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream.as_deref()).await {
                 Ok((mut log_lines, new_cursor)) => {
                     // Truncate to last N lines if requested; only advance
                     // cursor by the number of lines actually returned so
@@ -736,6 +772,24 @@ async fn dispatch(
                 }
                 None => Response::err(req_id.clone(), "no PTY master for job"),
             }
+        }
+        Command::Clean { workspace } => {
+            let to_remove: Vec<String> = {
+                let store_ref = store.lock().await;
+                store_ref
+                    .list_workspace(workspace.as_deref())
+                    .into_iter()
+                    .filter(|j| !j.is_alive())
+                    .map(|j| j.id.clone())
+                    .collect()
+            };
+            let count = to_remove.len();
+            for id in &to_remove {
+                store.lock().await.remove(id);
+                let _ = tokio::fs::remove_dir_all(bgrun_daemon::state::job_dir(id)).await;
+            }
+            info!(count = %count, "cleaned terminal-state jobs");
+            Response::ok(req_id.clone(), serde_json::json!({"removed": count}))
         }
         Command::Attach { .. } => {
             // Attach is handled upstream in handle_connection before dispatch.

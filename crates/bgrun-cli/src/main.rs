@@ -1,6 +1,7 @@
 use anyhow::Result;
 use bgrun_proto::{Command, JobRecord};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 mod autostart;
@@ -14,6 +15,10 @@ pub mod output;
     about = "Background process runner for AI agent workflows"
 )]
 struct Cli {
+    /// Output in JSON format (default: human-readable)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -133,9 +138,17 @@ enum Commands {
         #[arg(long)]
         level: Option<String>,
 
+        /// Filter by stream source (stdout, stderr, pty)
+        #[arg(long)]
+        stream: Option<String>,
+
         /// Strip ANSI escape codes from output
         #[arg(long)]
         strip_ansi: bool,
+
+        /// Follow new log lines in real time (polls every 200ms)
+        #[arg(long)]
+        follow: bool,
     },
 
     /// Show log lines since the last diff call
@@ -146,6 +159,10 @@ enum Commands {
         /// Number of lines to show (unlimited if not set)
         #[arg(long)]
         lines: Option<usize>,
+
+        /// Filter by stream source (stdout, stderr, pty)
+        #[arg(long)]
+        stream: Option<String>,
 
         /// Strip ANSI escape codes from output
         #[arg(long)]
@@ -199,8 +216,8 @@ enum Commands {
 
     /// Print JSON Schema for a command's arguments
     Schema {
-        /// Command name (run, kill, tail)
-        command: String,
+        /// Command name (run, kill, tail, or leave blank for unified enum)
+        command: Option<String>,
     },
 
     /// Hidden completion utility used by shell extensions
@@ -213,6 +230,13 @@ enum Commands {
         /// Print unique active workspaces
         #[arg(long)]
         workspaces: bool,
+    },
+
+    /// Remove all terminated (crashed/exited/killed) jobs
+    Clean {
+        /// Only clean jobs in this workspace
+        #[arg(long)]
+        workspace: Option<String>,
     },
 
     /// Manage embedded skills
@@ -234,6 +258,7 @@ enum SkillCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let json = cli.json;
 
     match cli.command {
         Some(Commands::Run {
@@ -267,44 +292,47 @@ async fn main() -> Result<()> {
                 pty_rows: rows,
                 max_rss_mb: max_rss,
             };
-            commands::run::run(cmd, name, workspace, flags).await?;
+            commands::run::run(cmd, name, workspace, flags, json).await?;
         }
         Some(Commands::List { workspace }) => {
-            commands::list::list(workspace).await?;
+            commands::list::list(workspace, json).await?;
         }
         Some(Commands::Status { id }) => {
-            commands::status::status(id).await?;
+            commands::status::status(id, json).await?;
         }
         Some(Commands::Kill { id, workspace }) => {
-            commands::kill::kill(id, workspace).await?;
+            commands::kill::kill(id, workspace, json).await?;
         }
         Some(Commands::Wait { id, timeout }) => {
-            commands::wait::wait(id, timeout).await?;
+            commands::wait::wait(id, timeout, json).await?;
         }
         Some(Commands::Tail {
             id,
             lines,
             digest,
             level,
+            stream,
             strip_ansi,
+            follow,
         }) => {
-            commands::tail::tail(id, lines, digest, level, strip_ansi).await?;
+            commands::tail::tail(id, lines, digest, level, stream, strip_ansi, follow, json).await?;
         }
         Some(Commands::Diff {
             id,
             lines,
+            stream,
             strip_ansi,
         }) => {
-            commands::diff::diff(id, lines, strip_ansi).await?;
+            commands::diff::diff(id, lines, stream, strip_ansi, json).await?;
         }
         Some(Commands::RunGroup { names }) => {
-            commands::run_group::run_group(names).await?;
+            commands::run_group::run_group(names, json).await?;
         }
         Some(Commands::Send { id, data }) => {
-            commands::send::send(id, data).await?;
+            commands::send::send(id, data, json).await?;
         }
         Some(Commands::Stats { id }) => {
-            commands::stats::stats(id).await?;
+            commands::stats::stats(id, json).await?;
         }
         Some(Commands::Attach { id }) => {
             commands::attach::attach_job(id).await?;
@@ -315,10 +343,10 @@ async fn main() -> Result<()> {
             regex,
             timeout,
         }) => {
-            commands::expect::expect(id, pattern, regex, timeout).await?;
+            commands::expect::expect(id, pattern, regex, timeout, json).await?;
         }
         Some(Commands::Schema { command }) => {
-            commands::schema::print_schema(&command)?;
+            commands::schema::print_schema(command.as_deref())?;
         }
         Some(Commands::Completions { active_ids, workspaces }) => {
             let socket_path = bgrun_proto::paths::socket_path();
@@ -346,13 +374,23 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Some(Commands::Clean { workspace }) => {
+            commands::clean::clean(workspace).await?;
+        }
         Some(Commands::Skill { command }) => match command {
             SkillCommands::Install { path } => {
                 commands::skill::install(path)?;
             }
         },
         None => {
-            commands::interactive::start_menu().await?;
+            if std::io::stdout().is_terminal() {
+                commands::interactive::start_menu().await?;
+            } else {
+                // Non-interactive: show help
+                let mut cmd = Cli::command();
+                cmd.print_help()?;
+                println!();
+            }
         }
     }
 

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bgrun_core::{Job, JobStore};
-use bgrun_proto::{JobRecord, JobState, RunArgs};
+use bgrun_proto::{JobRecord, JobState, RestartPolicy, RunArgs};
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use tokio::process::{Child, Command};
@@ -40,10 +40,15 @@ pub static JOB_BROADCASTS: once_cell::sync::Lazy<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<Vec<u8>>>>,
 > = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Notify trigger for the reactive auto-shutdown monitor.
-/// Called whenever a job spawns or exits.
-pub static LIFECYCLE_NOTIFY: once_cell::sync::Lazy<tokio::sync::Notify> =
-    once_cell::sync::Lazy::new(|| tokio::sync::Notify::new());
+// Re-export for convenience — the static is defined in state.rs so the
+// library crate (orphan.rs) and binary crate (runner.rs) share one instance.
+pub use crate::state::LIFECYCLE_NOTIFY;
+
+/// Per-job mutex that serializes concurrent stdout/stderr writes to the
+/// shared log file. Prevents interleaved NDJSON entries.
+pub static LOG_WRITE_LOCKS: once_cell::sync::Lazy<
+    Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Spawns a new job process and returns its record.
 pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<JobRecord> {
@@ -155,6 +160,7 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
     job.env = args.env.clone();
+    job.cwd = args.cwd.clone();
 
     state::write_meta(&job).await?;
     state::write_status(&job).await?;
@@ -275,6 +281,10 @@ async fn handle_job_exit(
         let mut store = store.lock().await;
         if let Some(job) = store.get_mut(&id) {
             job.exit_code = exit_code;
+            // Reset consecutive_failures on clean exit
+            if exit_code == Some(0) {
+                job.consecutive_failures = 0;
+            }
             if job.state != JobState::Killed {
                 let _ = job.transition(new_state);
             }
@@ -286,17 +296,148 @@ async fn handle_job_exit(
     PTY_WRITERS.lock().await.remove(&id);
     PTY_PAIRS.lock().await.remove(&id);
     JOB_BROADCASTS.lock().await.remove(&id);
+    LOG_WRITE_LOCKS.lock().await.remove(&id);
 
     // Persist status
     let job = {
         let store = store.lock().await;
         store.get(&id).cloned()
     };
-    if let Some(job) = job {
-        let _ = state::write_status(&job).await;
+    if let Some(ref job) = job {
+        let _ = state::write_status(job).await;
         info!(id = %id, state = %job.state.to_string(), "job exited");
     }
+
+    // Exponential backoff restart for crashed jobs with OnCrash policy
+    if let Some(ref job) = job {
+        if job.state == JobState::Crashed {
+            let restart_policy = job.restart.clone();
+            if let Some(RestartPolicy::OnCrash { backoff_ms }) = restart_policy {
+                let backoff_ms = backoff_ms.max(1_000); // floor at 1s
+                let consecutive = job.consecutive_failures;
+                let running_10s = (chrono::Utc::now() - job.started_at)
+                    > chrono::Duration::seconds(10);
+
+                // Reset counter if the job ran for more than 10s
+                if running_10s {
+                    {
+                        let mut store = store.lock().await;
+                        if let Some(j) = store.get_mut(&id) {
+                            j.consecutive_failures = 0;
+                        }
+                    }
+                    // Only actually restart with base backoff after a longer run
+                    let store_clone = store.clone();
+                    let job_id = id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let rt = tokio::runtime::Handle::current();
+                        rt.block_on(async {
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            restart_job(job_id, store_clone).await;
+                        });
+                    });
+                } else {
+                    // Exponential backoff: base * 2^consecutive + jitter
+                    let exponent = 1u64 << consecutive.min(8); // cap exponent at 256x
+                    let delay_ms = backoff_ms.saturating_mul(exponent);
+                    let delay_ms = delay_ms.min(300_000); // cap at 5 min
+                    // Simple jitter: 0–1000ms based on nanosecond timestamp bits
+                    let jitter_ms = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos()
+                        % 1000) as u64;
+                    let total_ms = delay_ms + jitter_ms;
+
+                    // Increment consecutive_failures
+                    {
+                        let mut store = store.lock().await;
+                        if let Some(j) = store.get_mut(&id) {
+                            j.consecutive_failures = consecutive + 1;
+                        }
+                    }
+
+                    info!(
+                        id = %id,
+                        backoff_ms = %total_ms,
+                        consecutive = %consecutive,
+                        "scheduled restart after crash"
+                    );
+
+                    let store_clone = store.clone();
+                    let job_id = id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let rt = tokio::runtime::Handle::current();
+                        rt.block_on(async {
+                            sleep(Duration::from_millis(total_ms)).await;
+                            restart_job(job_id, store_clone).await;
+                        });
+                    });
+                }
+            }
+        }
+    }
+
     LIFECYCLE_NOTIFY.notify_one();
+}
+
+/// Re-spawns a job that previously crashed, using the stored Job data
+/// to reconstruct RunArgs. Removes the old crashed record first so
+/// named jobs never accumulate stale entries.
+async fn restart_job(id: String, store: Arc<Mutex<JobStore>>) {
+    let job = {
+        let store_ref = store.lock().await;
+        store_ref.get(&id).cloned()
+    };
+    let Some(job) = job else {
+        error!(id = %id, "restart: job not found");
+        return;
+    };
+
+    // Don't re-spawn if the job was killed or manually put into a terminal state
+    if !matches!(job.state, JobState::Crashed) {
+        return;
+    }
+
+    // If a job with the same name is already alive, skip restart entirely.
+    // This prevents `bgrun kill <name>` from being defeated by a pending
+    // restart scheduled for an older UUID.
+    if let Some(ref name) = job.name {
+        let store_ref = store.lock().await;
+        if let Some(existing) = store_ref.find_by_name(name) {
+            if existing.is_alive() {
+                info!(name = %name, "restart skipped: job already alive");
+                return;
+            }
+        }
+    }
+
+    let args = RunArgs {
+        cmd: job.cmd.clone(),
+        name: job.name.clone(),
+        workspace: job.workspace.clone(),
+        readiness: job.readiness.clone(),
+        restart: job.restart.clone(),
+        pty: job.pty,
+        max_runtime_ms: job.max_runtime_ms,
+        env: job.env.clone(),
+        after: None, // skip dependency check on restart
+        cwd: job.cwd.clone(),
+        pty_cols: None, // use defaults
+        pty_rows: None,
+        max_rss_mb: job.max_rss_mb,
+    };
+
+    // Remove the old crashed record from both store and disk so named
+    // jobs never accumulate stale entries.
+    store.lock().await.remove(&id);
+    let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+
+    info!(id = %id, "restarting crashed job");
+    match spawn_job(args, store).await {
+        Ok(_) => info!(id = %id, "restart succeeded"),
+        Err(e) => error!(id = %id, error = %e, "restart failed"),
+    }
 }
 
 /// Monitors a piped child process and calls handle_job_exit on exit.
@@ -455,6 +596,7 @@ async fn spawn_pty_job(
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
     job.env = args.env.clone();
+    job.cwd = args.cwd.clone();
 
     state::write_meta(&job).await?;
     state::write_status(&job).await?;
@@ -786,6 +928,7 @@ async fn capture_output(
 }
 
 /// Writes a single line to the log file as a structured NDJSON entry.
+/// Serializes per-job to prevent interleaved stdout/stderr lines.
 async fn write_ts_line(
     file: &mut tokio::fs::File,
     line: &[u8],
@@ -803,6 +946,13 @@ async fn write_ts_line(
         c: content,
     };
     let json = serde_json::to_string(&entry).unwrap_or_default();
+
+    // Acquire per-job lock to prevent interleaving between stdout/stderr tasks
+    let lock = {
+        let mut locks = LOG_WRITE_LOCKS.lock().await;
+        locks.entry(id.to_string()).or_default().clone()
+    };
+    let _guard = lock.lock().await;
 
     if file.write_all(json.as_bytes()).await.is_err() {
         error!(id = %id, label = %label, "failed to write log entry");

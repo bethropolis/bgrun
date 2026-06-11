@@ -1,4 +1,5 @@
 pub mod attach;
+pub mod clean;
 pub mod diff;
 pub mod interactive;
 pub mod expect;

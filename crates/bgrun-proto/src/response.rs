@@ -28,6 +28,8 @@ pub struct JobRecord {
     pub env: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_rss_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cwd: Option<String>,
 }
 
 /// Helper for serde skip_serializing_if on bool fields.
@@ -44,6 +46,8 @@ pub struct JobStatus {
     pub restart_count: u32,
     #[serde(default)]
     pub last_diff_cursor: u64,
+    #[serde(default)]
+    pub consecutive_failures: u32,
 }
 
 /// Response envelope for all daemon replies.

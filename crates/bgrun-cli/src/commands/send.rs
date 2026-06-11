@@ -6,7 +6,7 @@ use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Sends data to a job's stdin.
-pub async fn send(id: String, data: String) -> Result<()> {
+pub async fn send(id: String, data: String, json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -23,7 +23,7 @@ pub async fn send(id: String, data: String) -> Result<()> {
         anyhow::bail!("{}", response.error.unwrap_or_default());
     }
 
-    if output_mode() == crate::output::OutputMode::Human {
+    if output_mode(json) == crate::output::OutputMode::Human {
         println!("Sent stdin to job {id}");
     } else if let Some(val) = response.data {
         println!("{}", serde_json::to_string(&val)?);

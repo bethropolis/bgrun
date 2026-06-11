@@ -22,12 +22,12 @@ pub async fn start_menu() -> Result<()> {
         let select = Select::new("Select a bgrun action:", options).prompt();
         match select {
             Ok("List & Refresh Jobs") => {
-                let _ = crate::commands::list::list(None).await;
+                let _ = crate::commands::list::list(None, false).await;
             }
             Ok("View Job Status/Stats") => {
                 if let Some(id) = select_active_job().await? {
-                    let _ = crate::commands::status::status(id.clone()).await;
-                    let _ = crate::commands::stats::stats(id).await;
+                    let _ = crate::commands::status::status(id.clone(), false).await;
+                    let _ = crate::commands::stats::stats(id, false).await;
                 }
             }
             Ok("Attach to Interactive PTY") => {
@@ -37,12 +37,12 @@ pub async fn start_menu() -> Result<()> {
             }
             Ok("Tail Job Logs") => {
                 if let Some(id) = select_active_job().await? {
-                    let _ = crate::commands::tail::tail(id, 20, false, None, false).await;
+                    let _ = crate::commands::tail::tail(id, 20, false, None, None, false, false, false).await;
                 }
             }
             Ok("Kill a Job") => {
                 if let Some(id) = select_active_job().await? {
-                    let _ = crate::commands::kill::kill(Some(id), None).await;
+                    let _ = crate::commands::kill::kill(Some(id), None, false).await;
                 }
             }
             Ok("Exit Menu") | Err(_) => break,

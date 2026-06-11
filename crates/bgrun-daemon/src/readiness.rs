@@ -287,6 +287,7 @@ pub async fn readiness_loop(
             if let Some(job) = store.get_mut(&id) {
                 if let Ok(()) = job.transition(JobState::Ready) {
                     job.ready_at = Some(chrono::Utc::now());
+                    job.consecutive_failures = 0;
                     let _ = crate::state::write_status(job).await;
                     info!(
                         id = %id,
