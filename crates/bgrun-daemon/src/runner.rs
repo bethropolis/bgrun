@@ -450,28 +450,22 @@ async fn monitor_job(id: String, store: Arc<Mutex<JobStore>>, mut child: Child) 
     handle_job_exit(id, store, exit_code).await;
 }
 
-/// Monitors a PTY child process by polling try_wait and calls handle_job_exit on exit.
+/// Monitors a PTY child process using zero-overhead blocking OS wait.
 async fn monitor_pty_job(
     id: String,
     store: Arc<Mutex<JobStore>>,
     mut child: Box<dyn portable_pty::Child + Send>,
 ) {
-    loop {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let exit_code = Some(status.exit_code() as i32);
-                handle_job_exit(id, store, exit_code).await;
-                return;
-            }
-            Ok(None) => continue,
-            Err(e) => {
-                error!(id = %id, "error polling PTY child: {}", e);
-                handle_job_exit(id, store, Some(-1)).await;
-                return;
-            }
+    let exit_code = tokio::task::spawn_blocking(move || {
+        match child.wait() {
+            Ok(status) => Some(status.exit_code() as i32),
+            Err(_) => Some(-1),
         }
-    }
+    })
+    .await
+    .unwrap_or(Some(-1));
+
+    handle_job_exit(id, store, exit_code).await;
 }
 
 /// Polls the log file for a pattern with a timeout, returning true if found.
@@ -842,11 +836,19 @@ async fn monitor_memory_limit(
 ) {
     loop {
         sleep(Duration::from_secs(1)).await;
-        let pid = {
+
+        let (pid, is_alive) = {
             let store_ref = store.lock().await;
-            store_ref.get(&id).and_then(|j| j.pid)
+            match store_ref.get(&id) {
+                Some(j) => (j.pid, j.is_alive()),
+                None => (None, false),
+            }
         };
+
         let Some(pid) = pid else { break };
+        if !is_alive {
+            break;
+        }
         let rss_kb = get_process_rss_kb(pid);
         if let Some(rss_kb) = rss_kb {
             let rss_mb = rss_kb / 1024;
