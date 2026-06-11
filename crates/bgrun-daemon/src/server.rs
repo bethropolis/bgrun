@@ -11,13 +11,10 @@ use tracing::{error, info};
 
 use crate::runner;
 
-type SharedSystem = Arc<Mutex<sysinfo::System>>;
-
 /// Runs the Unix socket server, accepting connections forever.
 pub async fn run_server(
     socket_path: PathBuf,
     store: Arc<Mutex<JobStore>>,
-    sysinfo_system: SharedSystem,
 ) -> Result<()> {
     // Remove old socket file if it exists
     let _ = tokio::fs::remove_file(&socket_path).await;
@@ -34,9 +31,8 @@ pub async fn run_server(
         match listener.accept().await {
             Ok((stream, _addr)) => {
                 let store = store.clone();
-                let sysinfo_system = sysinfo_system.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store, sysinfo_system).await {
+                    if let Err(e) = handle_connection(stream, store).await {
                         error!("connection handler error: {}", e);
                     }
                 });
@@ -53,7 +49,6 @@ pub async fn run_server(
 async fn handle_connection(
     stream: UnixStream,
     store: Arc<Mutex<JobStore>>,
-    sysinfo_system: SharedSystem,
 ) -> Result<()> {
     // Peek at the first request without consuming the stream.
     // Attach hijacks the stream, so we cannot split it upfront.
@@ -85,7 +80,6 @@ async fn handle_connection(
             command: request.command.clone(),
         },
         store.clone(),
-        sysinfo_system.clone(),
     )
     .await;
     let json = serde_json::to_string(&first_response)?;
@@ -114,7 +108,7 @@ async fn handle_connection(
             Err(_) => continue,
         };
 
-        let response = dispatch(request, store.clone(), sysinfo_system.clone()).await;
+        let response = dispatch(request, store.clone()).await;
         let json = serde_json::to_string(&response)?;
         writer.write_all(json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
@@ -165,14 +159,27 @@ async fn handle_attach(
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
+    // Resolve name to UUID if needed
+    let job_id = {
+        let store_ref = store.lock().await;
+        store_ref.resolve_id(&id)
+    };
+    let job_id = match job_id {
+        Some(jid) => jid,
+        None => {
+            let (_reader, mut writer) = stream.into_split();
+            let err = Response::<()>::err("attach".into(), "job not found, not alive, or not a PTY job");
+            let json = serde_json::to_string(&err).unwrap_or_default();
+            let _ = writer.write_all(json.as_bytes()).await;
+            let _ = writer.write_all(b"\n").await;
+            return Ok(());
+        }
+    };
+
     // Verify job exists, is alive, and has a PTY
     let is_pty = {
         let store_ref = store.lock().await;
-        match store_ref.get(&id) {
-            Some(job) if job.is_alive() && job.pty => true,
-            Some(_) => false,
-            None => false,
-        }
+        matches!(store_ref.get(&job_id), Some(job) if job.is_alive() && job.pty)
     };
 
     if !is_pty {
@@ -197,10 +204,10 @@ async fn handle_attach(
     stream_write.write_all(json.as_bytes()).await?;
     stream_write.write_all(b"\n").await?;
 
-    // Get the PTY writer for stdin injection
+    // Get the PTY writer for stdin injection (use resolved job_id)
     let pty_writer = {
         let mut writers = runner::PTY_WRITERS.lock().await;
-        writers.get_mut(&id).map(|w| w.clone())
+        writers.get_mut(&job_id).map(|w| w.clone())
     };
 
     let pty_writer = match pty_writer {
@@ -208,10 +215,10 @@ async fn handle_attach(
         None => return Ok(()),
     };
 
-    // Subscribe to the broadcast channel for PTY output
+    // Subscribe to the broadcast channel for PTY output (use resolved job_id)
     let rx = {
         let broadcasts = runner::JOB_BROADCASTS.lock().await;
-        broadcasts.get(&id).map(|tx| tx.subscribe())
+        broadcasts.get(&job_id).map(|tx| tx.subscribe())
     };
 
     let mut rx = match rx {
@@ -219,11 +226,14 @@ async fn handle_attach(
         None => return Ok(()),
     };
 
+    // Shared signal to notify stdin forwarding when the job exits
+    let exit_notify = Arc::new(tokio::sync::Notify::new());
+
     // Spawn task to forward broadcast PTY output → socket write half
     let write_half = Arc::new(tokio::sync::Mutex::new(stream_write));
     let write_half_clone = write_half.clone();
 
-    let output_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+    let mut output_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(bytes) => {
@@ -239,30 +249,45 @@ async fn handle_attach(
         }
     });
 
-    // Forward socket reads → PTY writer (stdin)
-    // Reads raw bytes from the socket and writes them to the PTY
-    {
+    // Spawn task to forward socket reads → PTY writer (stdin)
+    let exit_notify_clone = exit_notify.clone();
+    let mut stdin_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         let mut buf = [0u8; 8192];
         loop {
-            match stream_read.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    let data = buf[..n].to_vec();
-                    let mut writer = pty_writer.lock().unwrap();
-                    use std::io::Write;
-                    if writer.write_all(&data).is_err() {
-                        break;
+            tokio::select! {
+                result = stream_read.read(&mut buf) => {
+                    match result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let data = buf[..n].to_vec();
+                            let mut writer = pty_writer.lock().unwrap();
+                            use std::io::Write;
+                            if writer.write_all(&data).is_err() {
+                                break;
+                            }
+                            let _ = writer.flush();
+                        }
+                        Err(_) => break,
                     }
-                    let _ = writer.flush();
                 }
-                Err(_) => break,
+                _ = exit_notify_clone.notified() => break,
             }
         }
-    }
+    });
 
-    // Wait for output task to finish
-    output_task.abort();
-    let _ = output_task.await;
+    // Wait for either task to finish (borrow to avoid moves)
+    tokio::select! {
+        _ = &mut output_task => {
+            // Job exited (broadcast closed); signal stdin task to stop
+            exit_notify.notify_one();
+            let _ = stdin_task.await;
+        }
+        _ = &mut stdin_task => {
+            // Client disconnected; abort output task
+            output_task.abort();
+            let _ = output_task.await;
+        }
+    }
 
     Ok(())
 }
@@ -271,7 +296,6 @@ async fn handle_attach(
 async fn dispatch(
     request: Request,
     store: Arc<Mutex<JobStore>>,
-    sysinfo_system: SharedSystem,
 ) -> serde_json::Value {
     let req_id = request.id;
     let cmd_name = format!("{:?}", request.command);
@@ -286,7 +310,12 @@ async fn dispatch(
         },
         Command::Status { id } => {
             let store = store.lock().await;
-            match store.get(&id) {
+            let job_id = store.resolve_id(&id);
+            let job_id = match job_id {
+                Some(jid) => jid,
+                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+            };
+            match store.get(&job_id) {
                 Some(job) => {
                     let status = bgrun_proto::JobStatus {
                         state: job.state.clone(),
@@ -356,13 +385,26 @@ async fn dispatch(
             let mut exit_code = None;
             let mut state = None;
 
+            // Resolve name to UUID first
+            let resolved_id = {
+                let store_ref = store.lock().await;
+                store_ref.resolve_id(&id)
+            };
+            let resolved_id = match resolved_id {
+                Some(jid) => jid,
+                None => {
+                    let err = Response::<()>::err(req_id, "job not found".to_string());
+                    return serde_json::to_value(err).unwrap_or_default();
+                }
+            };
+
             loop {
                 if start.elapsed() >= timeout {
                     break;
                 }
                 {
                     let store_ref = store.lock().await;
-                    match store_ref.get(&id) {
+                    match store_ref.get(&resolved_id) {
                         Some(job) if job.state == bgrun_proto::JobState::Ready
                             || job.ready_at.is_some() =>
                         {
@@ -412,8 +454,17 @@ async fn dispatch(
             level,
             strip_ansi,
         }) => {
+            // Resolve name to UUID
+            let job_id = {
+                let store_ref = store.lock().await;
+                store_ref.resolve_id(&id)
+            };
+            let job_id = match job_id {
+                Some(jid) => jid,
+                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+            };
             if digest {
-                match bgrun_daemon::log_manager::tail_digest(&id).await {
+                match bgrun_daemon::log_manager::tail_digest(&job_id).await {
                     Ok(digest) => match serde_json::to_value(digest) {
                         Ok(val) => Response::ok(req_id.clone(), val),
                         Err(e) => {
@@ -423,7 +474,7 @@ async fn dispatch(
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
             } else {
-                match bgrun_daemon::log_manager::tail_lines(&id, lines).await {
+                match bgrun_daemon::log_manager::tail_lines(&job_id, lines).await {
                     Ok(mut log_lines) => {
                         // Filter by level if specified
                         if let Some(ref lvl) = level {
@@ -457,12 +508,21 @@ async fn dispatch(
             lines,
             strip_ansi,
         } => {
+            // Resolve name to UUID
+            let job_id = {
+                let store_ref = store.lock().await;
+                store_ref.resolve_id(&id)
+            };
+            let job_id = match job_id {
+                Some(jid) => jid,
+                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+            };
             // Read current cursor from store
             let cursor = {
                 let store_ref = store.lock().await;
-                store_ref.get(&id).map_or(0, |job| job.last_diff_cursor)
+                store_ref.get(&job_id).map_or(0, |job| job.last_diff_cursor)
             };
-            match bgrun_daemon::log_manager::diff_since(&id, cursor).await {
+            match bgrun_daemon::log_manager::diff_since(&job_id, cursor).await {
                 Ok((mut log_lines, new_cursor)) => {
                     // Truncate to last N lines if requested; only advance
                     // cursor by the number of lines actually returned so
@@ -483,14 +543,14 @@ async fn dispatch(
                     // Update cursor in store and persist
                     {
                         let mut store_ref = store.lock().await;
-                        if let Some(job) = store_ref.get_mut(&id) {
+                        if let Some(job) = store_ref.get_mut(&job_id) {
                             job.last_diff_cursor = actual_new;
                         }
                     }
                     // Persist updated status
                     {
                         let store_ref = store.lock().await;
-                        if let Some(job) = store_ref.get(&id) {
+                        if let Some(job) = store_ref.get(&job_id) {
                             let _ = bgrun_daemon::state::write_status(job).await;
                         }
                     }
@@ -518,7 +578,7 @@ async fn dispatch(
             Err(e) => Response::err(req_id.clone(), e.to_string()),
         },
         Command::Stats { id } => {
-            match runner::get_stats(&id, store.clone(), sysinfo_system).await {
+            match runner::get_stats(&id, store.clone()).await {
                 Ok(stats) => match serde_json::to_value(stats) {
                     Ok(val) => Response::ok(req_id.clone(), val),
                     Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
@@ -535,10 +595,23 @@ async fn dispatch(
             let start = tokio::time::Instant::now();
             let timeout = std::time::Duration::from_millis(timeout_ms);
 
+            // Resolve name to UUID
+            let job_id = {
+                let store_ref = store.lock().await;
+                store_ref.resolve_id(&id)
+            };
+            let job_id = match job_id {
+                Some(jid) => jid,
+                None => {
+                    let err = Response::<()>::err(req_id.clone(), "job not found");
+                    return serde_json::to_value(err).unwrap_or_default();
+                }
+            };
+
             // Verify job exists and is alive
             {
                 let store_ref = store.lock().await;
-                match store_ref.get(&id) {
+                match store_ref.get(&job_id) {
                     Some(job) if job.is_alive() => {}
                     Some(_) => {
                         let err = Response::<()>::err(req_id.clone(), "job is not alive");
@@ -551,7 +624,7 @@ async fn dispatch(
                 }
             }
 
-            let log_path = bgrun_daemon::state::job_dir(&id).join("stdout.log");
+            let log_path = bgrun_daemon::state::job_dir(&job_id).join("stdout.log");
             let mut cursor = get_file_size(&log_path).await;
             let mut line_offset = count_lines_up_to(&log_path, cursor).await;
 
@@ -568,7 +641,7 @@ async fn dispatch(
                 // Check if job is still alive
                 {
                     let store_ref = store.lock().await;
-                    match store_ref.get(&id) {
+                    match store_ref.get(&job_id) {
                         Some(job) if job.is_alive() => {}
                         _ => {
                             let err = Response::<()>::err(req_id.clone(), "job exited before pattern was matched");
@@ -638,8 +711,17 @@ async fn dispatch(
             }
         }
         Command::ResizePty { id, cols, rows } => {
+            // Resolve name to UUID
+            let job_id = {
+                let store_ref = store.lock().await;
+                store_ref.resolve_id(&id)
+            };
+            let job_id = match job_id {
+                Some(jid) => jid,
+                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+            };
             let mut masters = runner::PTY_PAIRS.lock().await;
-            match masters.get_mut(&id) {
+            match masters.get_mut(&job_id) {
                 Some(master) => {
                     if let Err(e) = master.resize(portable_pty::PtySize {
                         cols,
@@ -744,7 +826,6 @@ mod tests {
         let response = dispatch(
             request,
             Arc::new(Mutex::new(JobStore::new())),
-            Arc::new(Mutex::new(sysinfo::System::new())),
         )
         .await;
         assert_eq!(response["ok"], false);

@@ -43,6 +43,37 @@ impl JobStore {
         self.name_index.get(name).and_then(|id| self.jobs.get(id))
     }
 
+    /// Resolves a query to a canonical job UUID.
+    ///
+    /// Tries in order:
+    /// 1. Exact UUID match
+    /// 2. Exact name match
+    /// 3. Unique prefix match (min 4 chars, at most one job starts with the prefix)
+    pub fn resolve_id(&self, query: &str) -> Option<String> {
+        // 1. Exact UUID match
+        if self.jobs.contains_key(query) {
+            return Some(query.to_string());
+        }
+        // 2. Exact name match
+        if let Some(uuid) = self.name_index.get(query) {
+            if self.jobs.contains_key(uuid) {
+                return Some(uuid.clone());
+            }
+        }
+        // 3. Unique prefix match (min 4 chars)
+        if query.len() >= 4 {
+            let matches: Vec<&String> = self
+                .jobs
+                .keys()
+                .filter(|id| id.starts_with(query))
+                .collect();
+            if matches.len() == 1 {
+                return Some(matches[0].clone());
+            }
+        }
+        None
+    }
+
     /// Lists all jobs, optionally filtered by workspace.
     /// When `workspace` is None, returns all jobs.
     pub fn list_workspace(&self, workspace: Option<&str>) -> Vec<&Job> {

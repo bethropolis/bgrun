@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The state of a managed job process.
@@ -26,7 +27,7 @@ impl std::fmt::Display for JobState {
 }
 
 /// Strategy for detecting when a job is ready to serve traffic.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessStrategy {
     LogPattern(String),
@@ -38,7 +39,7 @@ pub enum ReadinessStrategy {
 }
 
 /// Policy for restarting a job after it exits.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub enum RestartPolicy {
     Never,
     OnCrash { backoff_ms: u64 },

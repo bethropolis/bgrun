@@ -110,6 +110,7 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         restart,
         pty: false,
         max_runtime_ms: None,
+        max_rss_mb: None,
         env: HashMap::new(),
         after: job.after.clone(),
         cwd: None,

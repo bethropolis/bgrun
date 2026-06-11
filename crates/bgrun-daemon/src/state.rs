@@ -117,6 +117,7 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         job.restart = record.restart;
         job.pty = record.pty;
         job.max_runtime_ms = record.max_runtime_ms;
+        job.max_rss_mb = record.max_rss_mb;
         job.env = record.env;
         jobs.push(job);
     }
