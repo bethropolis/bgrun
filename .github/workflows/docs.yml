@@ -43,7 +43,6 @@ jobs:
           cp docs/architecture.md docs/book-src/architecture.md
           cp docs/bgrun-toml.md docs/book-src/bgrun-toml.md
           cp docs/commands.md docs/book-src/commands.md
-          cp docs/bgrun/SKILL.md docs/book-src/skill.md
           cat << 'EOF' > docs/book-src/SUMMARY.md
           # Summary
 
@@ -51,7 +50,6 @@ jobs:
           - [Architecture](architecture.md)
           - [bgrun.toml Reference](bgrun-toml.md)
           - [Command Reference](commands.md)
-          - [Embedded Skill Guide](skill.md)
           EOF
 
       - name: Setup Pages
