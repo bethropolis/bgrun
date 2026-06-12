@@ -7,14 +7,16 @@ use bgrun_proto::{Command, KillArgs, Request, Response, TailArgs, WaitResult};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::runner;
 
-/// Runs the Unix socket server, accepting connections forever.
+/// Runs the Unix socket server, accepting connections until shutdown is signalled.
 pub async fn run_server(
     socket_path: PathBuf,
     store: Arc<Mutex<JobStore>>,
+    shutdown: CancellationToken,
 ) -> Result<()> {
     // Remove old socket file if it exists
     let _ = tokio::fs::remove_file(&socket_path).await;
@@ -28,20 +30,31 @@ pub async fn run_server(
     info!("daemon listening on {}", socket_path.display());
 
     loop {
-        match listener.accept().await {
-            Ok((stream, _addr)) => {
-                let store = store.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store).await {
-                        error!("connection handler error: {}", e);
-                    }
-                });
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                info!("shutdown signal received, stopping server");
+                break;
             }
-            Err(e) => {
-                error!("accept error: {}", e);
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _addr)) => {
+                        let store = store.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_connection(stream, store).await {
+                                error!("connection handler error: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("accept error: {}", e);
+                    }
+                }
             }
         }
     }
+
+    Ok(())
 }
 
 /// Handles a single connection: reads NDJSON requests, dispatches, writes responses.
@@ -299,6 +312,7 @@ async fn dispatch(
 ) -> serde_json::Value {
     let req_id = request.id;
     let cmd_name = format!("{:?}", request.command);
+    let audit_args = args_summary(&request.command);
 
     let resp: Response<serde_json::Value> = match request.command {
         Command::Run(args) => match runner::spawn_job(args, store).await {
@@ -798,10 +812,10 @@ async fn dispatch(
         }
     };
 
-    // Record audit entry
+    // Record audit entry with a concise args summary
     let ok = resp.ok;
     let err_msg = resp.error.as_deref();
-    bgrun_daemon::audit::record(&cmd_name, "", ok, err_msg).await;
+    bgrun_daemon::audit::record(&cmd_name, &audit_args, ok, err_msg).await;
 
     match serde_json::to_value(&resp) {
         Ok(val) => val,
@@ -835,6 +849,37 @@ async fn read_range(path: &std::path::Path, start: u64, end: u64) -> Option<Stri
     let mut buf = vec![0u8; len];
     file.read_exact(&mut buf).await.ok()?;
     Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Builds a concise argument summary string for audit logging.
+fn args_summary(cmd: &Command) -> String {
+    match cmd {
+        Command::Run(args) => {
+            let cmd_str = args.cmd.join(" ");
+            if let Some(ref name) = args.name {
+                format!("name={} cmd=\"{}\"", name, cmd_str)
+            } else {
+                format!("cmd=\"{}\"", cmd_str)
+            }
+        }
+        Command::Kill(KillArgs { id, workspace }) => match (id, workspace) {
+            (Some(id), _) => format!("id={}", id),
+            (_, Some(ws)) => format!("workspace={}", ws),
+            _ => "".into(),
+        },
+        Command::Tail(TailArgs { id, lines, .. }) => format!("id={} lines={}", id, lines),
+        Command::Status { id } => format!("id={}", id),
+        Command::List { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
+        Command::Wait { id, .. } => format!("id={}", id),
+        Command::Diff { id, .. } => format!("id={}", id),
+        Command::Send { id, .. } => format!("id={}", id),
+        Command::Stats { id } => format!("id={}", id),
+        Command::Expect { id, pattern, .. } => format!("id={} pattern=\"{}\"", id, pattern),
+        Command::Attach { id } => format!("id={}", id),
+        Command::ResizePty { id, cols, rows } => format!("id={} {}x{}", id, cols, rows),
+        Command::Clean { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
+        Command::RunGroup { jobs } => format!("{} jobs", jobs.len()),
+    }
 }
 
 /// Counts the number of newlines in a file up to the given byte offset.

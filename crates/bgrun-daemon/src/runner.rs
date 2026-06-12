@@ -122,6 +122,9 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
     child_cmd.stdin(std::process::Stdio::piped());
     child_cmd.stdout(std::process::Stdio::piped());
     child_cmd.stderr(std::process::Stdio::piped());
+    if !args.env.is_empty() {
+        child_cmd.envs(&args.env);
+    }
 
     let mut child = child_cmd.spawn().context("failed to spawn process")?;
     let pid = child
@@ -537,6 +540,9 @@ async fn spawn_pty_job(
     if let Some(ref cwd) = args.cwd {
         cmd_builder.cwd(cwd);
     }
+    for (k, v) in &args.env {
+        cmd_builder.env(k, v);
+    }
 
     let child = slave
         .spawn_command(cmd_builder)
@@ -708,6 +714,47 @@ pub async fn kill_job(id_or_name: &str, store: Arc<Mutex<JobStore>>) -> Result<(
 
     info!(id = %id, pid = %pid, "job killed");
     Ok(())
+}
+
+/// Kills all alive jobs. Sends SIGTERM to each process group, then SIGKILL after 3s.
+pub async fn kill_all_jobs(store: Arc<Mutex<JobStore>>) {
+    let alive: Vec<(String, u32)> = {
+        let store_ref = store.lock().await;
+        store_ref
+            .list_workspace(None)
+            .into_iter()
+            .filter(|j| j.is_alive())
+            .filter_map(|j| j.pid.map(|p| (j.id.clone(), p)))
+            .collect()
+    };
+
+    if alive.is_empty() {
+        return;
+    }
+
+    info!(count = %alive.len(), "shutting down all jobs");
+
+    // SIGTERM all process groups
+    for (_, pid) in &alive {
+        let pgid = Pid::from_raw(*pid as i32);
+        let _ = killpg(pgid, Signal::SIGTERM);
+    }
+
+    // Wait 3s then SIGKILL survivors
+    sleep(Duration::from_secs(3)).await;
+
+    for (id, pid) in &alive {
+        let still_alive = {
+            let store_ref = store.lock().await;
+            store_ref.get(id).is_some_and(|j| j.is_alive())
+        };
+        if still_alive {
+            let pgid = Pid::from_raw(*pid as i32);
+            if let Err(e) = killpg(pgid, Signal::SIGKILL) {
+                error!(id = %id, error = %e, "failed to SIGKILL during shutdown");
+            }
+        }
+    }
 }
 
 /// Sends data to a job's stdin.

@@ -1,0 +1,66 @@
+.TH BGRUN\-DAEMON 1 2026-06-11 "bgrun" "User Commands"
+.SH NAME
+bgrun-daemon \- Background process runner daemon
+.SH SYNOPSIS
+.B bgrun-daemon
+.SH DESCRIPTION
+\fBbgrun-daemon\fR is the background daemon for the bgrun process runner.
+It is typically launched automatically by the \fBbgrun\fR CLI on demand and
+should not be started manually.
+
+The daemon:
+- Listens on a Unix domain socket for NDJSON commands from the CLI
+- Spawns and manages child processes (piped or PTY)
+- Monitors job readiness, resource usage, and runtime limits
+- Persists job state to disk for crash recovery
+- Re-adopts orphaned jobs on restart
+- Auto-shuts down after a configurable idle timeout (default: 60s)
+- Handles SIGTERM/SIGINT/SIGHUP by killing all child processes and exiting
+
+.SH ENVIRONMENT
+.TP
+.B BGRUN_IDLE_TIMEOUT
+Idle timeout in seconds before auto-shutdown (default: 60). Set to 0 to disable.
+.TP
+.B BGRUN_LOG
+Tracing filter for daemon log output (e.g. "info", "debug", "warn").
+.TP
+.B BGRUN_DAEMONIZED
+Internal flag; do not set manually.
+.TP
+.B XDG_RUNTIME_DIR
+Socket and state directory location. Falls back to /tmp/bgrun-<uid> if unset.
+
+.SH STATE DIRECTORY
+The daemon stores job metadata and logs under:
+.PP
+.RS
+$XDG_RUNTIME_DIR/bgrun/   (or /tmp/bgrun-<uid>/)
+.RE
+.PP
+Structure:
+.RS
+.IP \(bu 2
+jobs/<uuid>/meta.json  \-\- durable job record
+.IP \(bu
+jobs/<uuid>/status.json \-\- job status (state, exit code)
+.IP \(bu
+jobs/<uuid>/stdout.log  \-\- captured stdout/stderr/pty output
+.IP \(bu
+daemon.sock             \-\- Unix domain socket
+.IP \(bu
+daemon.pid              \-\- PID file
+.IP \(bu
+daemon.log              \-\- daemon tracing output
+.IP \(bu
+audit.log               \-\- command audit trail
+.RE
+
+.SH SIGNALS
+.TP
+.B SIGTERM, SIGINT, SIGHUP
+Graceful shutdown: kills all child processes (SIGTERM + 3s grace + SIGKILL),
+removes the socket file, and exits.
+
+.SH SEE ALSO
+.BR bgrun (1)

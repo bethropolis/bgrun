@@ -30,3 +30,4 @@ once_cell = { workspace = true }
 regex = { workspace = true }
 shlex = { workspace = true }
 strip-ansi-escapes = { workspace = true }
+tokio-util = { workspace = true }

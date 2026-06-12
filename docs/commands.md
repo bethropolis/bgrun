@@ -482,14 +482,40 @@ bgrun schema tail
 
 ## completions (hidden)
 
-Hidden subcommand for shell autocomplete scripts. Prints tab-separated job information for Fish shell tab-completion.
+Hidden subcommand for shell autocomplete scripts. Prints tab-separated job information for shell tab-completion, or generates full completion scripts.
 
 ```
 bgrun completions --active-ids
 bgrun completions --workspaces
+bgrun completions --shell fish
+bgrun completions --shell bash
+bgrun completions --shell zsh
 ```
 
-**Examples**
+**Flags**
+
+| Flag | Description |
+|------|-------------|
+| `--active-ids` | Print active short IDs with state descriptions |
+| `--workspaces` | Print unique active workspaces |
+| `--shell <fish\|bash\|zsh>` | Generate a complete completion script for the given shell |
+
+**Installation**
+
+```fish
+# Fish
+bgrun completions --shell fish > ~/.config/fish/completions/bgrun.fish
+
+# Bash
+bgrun completions --shell bash | sudo tee /etc/bash_completion.d/bgrun
+
+# Zsh
+bgrun completions --shell zsh > /usr/local/share/zsh/site-functions/_bgrun
+```
+
+**Dynamic completion integration**
+
+The `--active-ids` and `--workspaces` flags produce live data from the daemon, used by shell functions:
 
 ```fish
 # In ~/.config/fish/completions/bgrun.fish:

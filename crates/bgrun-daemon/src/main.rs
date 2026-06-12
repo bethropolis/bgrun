@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bgrun_core::JobStore;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -43,9 +44,32 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "orphan re-adoption failed");
     }
 
+    // Create shutdown token for coordinated cancellation
+    let shutdown = CancellationToken::new();
+
+    // Signal handler: catch SIGTERM, SIGINT (Ctrl+C), SIGHUP
+    let sig_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut term = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        let mut int = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+        let mut hup = signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
+
+        tokio::select! {
+            _ = term.recv() => tracing::info!("received SIGTERM"),
+            _ = int.recv() => tracing::info!("received SIGINT"),
+            _ = hup.recv() => tracing::info!("received SIGHUP"),
+        }
+
+        tracing::info!("shutdown signal received, killing all jobs");
+        sig_shutdown.cancel();
+    });
+
     // Spawn the reactive, event-driven auto-shutdown monitor (0% idle polling)
     let store_clone = store.clone();
     let socket_path_clone = socket_path.clone();
+    let shutdown_monitor = shutdown.clone();
     tokio::spawn(async move {
         use crate::runner::LIFECYCLE_NOTIFY;
 
@@ -60,39 +84,48 @@ async fn main() -> Result<()> {
         );
 
         loop {
-            let active_count = {
-                let store_ref = store_clone.lock().await;
-                store_ref
-                    .list_workspace(None)
-                    .iter()
-                    .filter(|j| j.is_alive())
-                    .count()
-            };
+            tokio::select! {
+                biased;
+                _ = shutdown_monitor.cancelled() => {
+                    tracing::info!("shutdown token set, auto-shutdown monitor exiting");
+                    break;
+                }
+                _ = async {
+                    let active_count = {
+                        let store_ref = store_clone.lock().await;
+                        store_ref
+                            .list_workspace(None)
+                            .iter()
+                            .filter(|j| j.is_alive())
+                            .count()
+                    };
 
-            if active_count > 0 {
-                LIFECYCLE_NOTIFY.notified().await;
-            } else {
-                tokio::select! {
-                    _ = LIFECYCLE_NOTIFY.notified() => {}
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds)) => {
-                        let final_count = {
-                            let store_ref = store_clone.lock().await;
-                            store_ref
-                                .list_workspace(None)
-                                .iter()
-                                .filter(|j| j.is_alive())
-                                .count()
-                        };
-                        if final_count == 0 {
-                            tracing::info!(
-                                timeout_secs = timeout_seconds,
-                                "idle timeout reached reactively, initiating graceful auto-shutdown"
-                            );
-                            let _ = tokio::fs::remove_file(&socket_path_clone).await;
-                            std::process::exit(0);
+                    if active_count > 0 {
+                        LIFECYCLE_NOTIFY.notified().await;
+                    } else {
+                        tokio::select! {
+                            _ = LIFECYCLE_NOTIFY.notified() => {}
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds)) => {
+                                let final_count = {
+                                    let store_ref = store_clone.lock().await;
+                                    store_ref
+                                        .list_workspace(None)
+                                        .iter()
+                                        .filter(|j| j.is_alive())
+                                        .count()
+                                };
+                                if final_count == 0 {
+                                    tracing::info!(
+                                        timeout_secs = timeout_seconds,
+                                        "idle timeout reached reactively, initiating graceful auto-shutdown"
+                                    );
+                                    let _ = tokio::fs::remove_file(&socket_path_clone).await;
+                                    std::process::exit(0);
+                                }
+                            }
                         }
                     }
-                }
+                } => {}
             }
         }
     });
@@ -103,7 +136,14 @@ async fn main() -> Result<()> {
         "daemon starting"
     );
 
-    server::run_server(socket_path, store).await
+    // Run server until shutdown is signalled
+    server::run_server(socket_path.clone(), store.clone(), shutdown.clone()).await?;
+
+    tracing::info!("server stopped, cleaning up jobs");
+    runner::kill_all_jobs(store).await;
+    let _ = tokio::fs::remove_file(&socket_path).await;
+    tracing::info!("daemon shut down complete");
+    Ok(())
 }
 
 /// Spawns this executable as a detached daemon process.
