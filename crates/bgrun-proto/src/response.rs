@@ -32,6 +32,12 @@ pub struct JobRecord {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub allocated_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_check: Option<ReadinessStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_interval_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_threshold: Option<u32>,
 }
 
 /// Helper for serde skip_serializing_if on bool fields.

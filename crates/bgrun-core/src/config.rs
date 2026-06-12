@@ -46,6 +46,14 @@ pub struct JobConfig {
     pub env: Option<HashMap<String, String>>,
     #[serde(rename = "allocate-port")]
     pub allocate_port: Option<String>,
+    #[serde(rename = "health-check-url")]
+    pub health_check_url: Option<String>,
+    #[serde(rename = "health-check-port")]
+    pub health_check_port: Option<u16>,
+    #[serde(rename = "health-interval-secs")]
+    pub health_interval_secs: Option<u64>,
+    #[serde(rename = "health-threshold")]
+    pub health_threshold: Option<u32>,
 }
 
 /// Errors during config parsing or resolution.
@@ -114,6 +122,13 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         _ => None,
     });
 
+    // Resolve health check strategy (separate from readiness)
+    let health_check = job
+        .health_check_url
+        .as_ref()
+        .map(|u| ReadinessStrategy::HttpPoll(u.clone()))
+        .or_else(|| job.health_check_port.map(ReadinessStrategy::TcpPort));
+
     Ok(RunArgs {
         cmd,
         name: Some(name.into()),
@@ -127,6 +142,9 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         after: job.after.clone(),
         cwd: job.cwd.clone(),
         allocate_port: job.allocate_port.clone(),
+        health_check,
+        health_interval_secs: job.health_interval_secs,
+        health_threshold: job.health_threshold,
         pty_cols: None,
         pty_rows: None,
     })

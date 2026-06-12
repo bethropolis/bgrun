@@ -147,6 +147,9 @@ async fn test_proto_serialization_roundtrip() {
         after: Some("db".into()),
         cwd: None,
         allocate_port: None,
+        health_check: None,
+        health_interval_secs: None,
+        health_threshold: None,
         pty_cols: None,
         pty_rows: None,
     };

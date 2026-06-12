@@ -34,6 +34,11 @@ pub fn print_job(record: &JobRecord, mode: OutputMode) -> Result<()> {
             if let Some(port) = record.allocated_port {
                 println!("Port:      {}", port);
             }
+            if record.health_check.is_some() {
+                println!("Health:    enabled (interval={}s, threshold={})",
+                    record.health_interval_secs.unwrap_or(10),
+                    record.health_threshold.unwrap_or(3));
+            }
         }
         OutputMode::Json => {
             println!("{}", serde_json::to_string(record)?);

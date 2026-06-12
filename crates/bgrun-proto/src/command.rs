@@ -27,6 +27,12 @@ pub struct RunArgs {
     pub max_rss_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub allocate_port: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_check: Option<ReadinessStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_interval_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub health_threshold: Option<u32>,
 }
 
 /// Arguments for the Kill command.
