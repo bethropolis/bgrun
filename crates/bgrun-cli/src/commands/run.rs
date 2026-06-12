@@ -22,6 +22,7 @@ pub struct RunFlags {
     pub pty_rows: Option<u16>,
     pub max_rss_mb: Option<u64>,
     pub max_runtime_ms: Option<u64>,
+    pub allocate_port: Option<String>,
 }
 
 /// Runs a command in the background via the daemon.
@@ -102,6 +103,7 @@ pub async fn run(
         cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         pty_cols: flags.pty_cols,
         pty_rows: flags.pty_rows,
+        allocate_port: flags.allocate_port,
     };
 
     let response = client.send::<JobRecord>(Command::Run(args)).await?;

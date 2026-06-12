@@ -31,6 +31,9 @@ pub fn print_job(record: &JobRecord, mode: OutputMode) -> Result<()> {
             println!("State:    {}", record.state);
             println!("Started:  {}", record.started_at);
             println!("Workspace: {}", record.workspace.as_deref().unwrap_or("-"));
+            if let Some(port) = record.allocated_port {
+                println!("Port:      {}", port);
+            }
         }
         OutputMode::Json => {
             println!("{}", serde_json::to_string(record)?);
@@ -48,10 +51,10 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
                 return Ok(());
             }
             println!(
-                "{:<24} {:<12} {:<8} {:<6} COMMAND",
-                "ID", "NAME", "STATE", "PID"
+                "{:<24} {:<12} {:<8} {:<6} {:<8} COMMAND",
+                "ID", "NAME", "STATE", "PID", "PORT"
             );
-            println!("{}", "-".repeat(80));
+            println!("{}", "-".repeat(88));
             for record in records {
                 let id_short = if record.id.len() > 8 {
                     &record.id[..8]
@@ -59,11 +62,12 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
                     &record.id
                 };
                 println!(
-                    "{:<24} {:<12} {:<8} {:<6} {}",
+                    "{:<24} {:<12} {:<8} {:<6} {:<8} {}",
                     id_short,
                     record.name.as_deref().unwrap_or("-"),
                     record.state.to_string(),
                     record.pid.map_or("-".into(), |p| p.to_string()),
+                    record.allocated_port.map_or("-".into(), |p| p.to_string()),
                     record.cmd.join(" "),
                 );
             }

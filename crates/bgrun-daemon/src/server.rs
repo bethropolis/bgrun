@@ -76,9 +76,11 @@ async fn handle_connection(
         Err(_) => return Ok(()),
     };
 
-    // If it's an Attach command, hijack the connection for raw streaming
-    if let Command::Attach { id } = request.command {
-        return handle_attach(id, stream, store).await;
+    // If it's an Attach or StreamLogs command, hijack the connection
+    match request.command {
+        Command::Attach { id } => return handle_attach(id, stream, store).await,
+        Command::StreamLogs { id } => return handle_stream_logs(id, stream, store).await,
+        _ => {}
     }
 
     // Normal path: split the stream and continue with NDJSON dispatching
@@ -305,6 +307,152 @@ async fn handle_attach(
     Ok(())
 }
 
+/// Handles a StreamLogs command: hijacks the connection and streams LogLine
+/// entries as NDJSON. First sends any lines already on disk, then subscribes
+/// to the live broadcast channel.
+async fn handle_stream_logs(
+    id: String,
+    stream: UnixStream,
+    store: Arc<Mutex<JobStore>>,
+) -> Result<()> {
+    use bgrun_proto::LogLine;
+    use tokio::io::AsyncWriteExt;
+
+    // Resolve name to UUID if needed
+    let job_id = {
+        let store_ref = store.lock().await;
+        store_ref.resolve_id(&id)
+    };
+    let job_id = match job_id {
+        Some(jid) => jid,
+        None => {
+            let (_reader, mut writer) = stream.into_split();
+            let err = Response::<()>::err("stream".into(), "job not found");
+            let json = serde_json::to_string(&err).unwrap_or_default();
+            let _ = writer.write_all(json.as_bytes()).await;
+            let _ = writer.write_all(b"\n").await;
+            return Ok(());
+        }
+    };
+
+    // Verify job exists
+    {
+        let store_ref = store.lock().await;
+        match store_ref.get(&job_id) {
+            Some(_) => {}
+            None => {
+                let (_reader, mut writer) = stream.into_split();
+                let err = Response::<()>::err("stream".into(), "job not found");
+                let json = serde_json::to_string(&err).unwrap_or_default();
+                let _ = writer.write_all(json.as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
+                return Ok(());
+            }
+        }
+    }
+
+    // Read existing lines from disk
+    let log_path = crate::state::job_dir(&job_id).join("stdout.log");
+    let file_size = get_file_size(&log_path).await;
+    let existing_lines = if file_size > 0 {
+        let content = read_range(&log_path, 0, file_size).await.unwrap_or_default();
+        content
+            .lines()
+            .filter_map(|raw| {
+                let (timestamp, _stream, content) = bgrun_daemon::log_manager::parse_line(raw);
+                Some(LogLine {
+                    line_number: 0,
+                    content,
+                    timestamp,
+                })
+            })
+            .collect::<Vec<LogLine>>()
+    } else {
+        Vec::new()
+    };
+
+    let (_, mut stream_write) = stream.into_split();
+
+    // Send initial success response with existing lines count
+    let init = serde_json::json!({
+        "id": "stream",
+        "ok": true,
+        "data": {
+            "existing": existing_lines.len(),
+            "cursor": file_size,
+        }
+    });
+    let json = serde_json::to_string(&init)?;
+    stream_write.write_all(json.as_bytes()).await?;
+    stream_write.write_all(b"\n").await?;
+
+    // Send existing lines
+    for line in &existing_lines {
+        let json = serde_json::to_string(line)?;
+        stream_write.write_all(json.as_bytes()).await?;
+        stream_write.write_all(b"\n").await?;
+    }
+
+    // Subscribe to the broadcast channel for live LogLine stream
+    let rx = {
+        let broadcasts = runner::LOG_BROADCASTS.lock().await;
+        broadcasts.get(&job_id).map(|tx| tx.subscribe())
+    };
+
+    let mut rx = match rx {
+        Some(r) => r,
+        None => return Ok(()),
+    };
+
+    // Spawn task to forward broadcast LogLines → socket
+    let mut output_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(line) => {
+                    let json = serde_json::to_string(&line).unwrap_or_default();
+                    if stream_write.write_all(json.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    if stream_write.write_all(b"\n").await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    });
+
+    // Also listen for job exit to close the stream
+    let exit_notify = Arc::new(tokio::sync::Notify::new());
+    let exit_notify_clone = exit_notify.clone();
+    let store_clone = store.clone();
+    let job_id_clone = job_id.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let done = {
+                let store_ref = store_clone.lock().await;
+                store_ref.get(&job_id_clone).map_or(true, |j| !j.is_alive())
+            };
+            if done {
+                exit_notify_clone.notify_one();
+                break;
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut output_task => {}
+        _ = exit_notify.notified() => {
+            output_task.abort();
+            let _ = output_task.await;
+        }
+    }
+
+    Ok(())
+}
+
 /// Dispatches a command to the appropriate handler.
 async fn dispatch(
     request: Request,
@@ -471,6 +619,7 @@ async fn dispatch(
             stream,
             cursor: cursor_opt,
             follow,
+            filter_regex,
         }) => {
             // Resolve name to UUID
             let job_id = {
@@ -482,6 +631,9 @@ async fn dispatch(
                 None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
             };
             let stream_deref = stream.as_deref();
+            let level_deref = level.as_deref();
+            let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
+            let regex_deref = regex_ref.as_ref();
             if digest {
                 match bgrun_daemon::log_manager::tail_digest(&job_id).await {
                     Ok(digest) => match serde_json::to_value(digest) {
@@ -494,7 +646,7 @@ async fn dispatch(
                 }
             } else if let Some(cursor) = cursor_opt {
                 // Cursor-based read for follow mode
-                match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream_deref).await {
+                match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream_deref, level_deref, regex_deref).await {
                     Ok((mut log_lines, new_cursor)) => {
                         // Strip ANSI escape codes if requested
                         if strip_ansi {
@@ -517,14 +669,8 @@ async fn dispatch(
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
             } else {
-                match bgrun_daemon::log_manager::tail_lines(&job_id, lines, stream_deref).await {
+                match bgrun_daemon::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
                     Ok(mut log_lines) => {
-                        // Filter by level if specified
-                        if let Some(ref lvl) = level {
-                            let lvl_lower = lvl.to_lowercase();
-                            log_lines
-                                .retain(|line| line.content.to_lowercase().contains(&lvl_lower));
-                        }
                         // Strip ANSI escape codes if requested
                         if strip_ansi {
                             for line in &mut log_lines {
@@ -557,6 +703,7 @@ async fn dispatch(
             lines,
             strip_ansi,
             stream,
+            filter_regex,
         } => {
             // Resolve name to UUID
             let job_id = {
@@ -572,7 +719,8 @@ async fn dispatch(
                 let store_ref = store.lock().await;
                 store_ref.get(&job_id).map_or(0, |job| job.last_diff_cursor)
             };
-            match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream.as_deref()).await {
+            let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
+            match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream.as_deref(), None, regex_ref.as_ref()).await {
                 Ok((mut log_lines, new_cursor)) => {
                     // Truncate to last N lines if requested; only advance
                     // cursor by the number of lines actually returned so
@@ -810,6 +958,10 @@ async fn dispatch(
             // This arm exists for exhaustiveness but should never be reached.
             Response::err(req_id.clone(), "attach not supported via dispatch")
         }
+        Command::StreamLogs { .. } => {
+            // StreamLogs is handled upstream in handle_connection before dispatch.
+            Response::err(req_id.clone(), "stream logs not supported via dispatch")
+        }
     };
 
     // Record audit entry with a concise args summary
@@ -867,11 +1019,23 @@ fn args_summary(cmd: &Command) -> String {
             (_, Some(ws)) => format!("workspace={}", ws),
             _ => "".into(),
         },
-        Command::Tail(TailArgs { id, lines, .. }) => format!("id={} lines={}", id, lines),
+        Command::Tail(TailArgs { id, lines, ref filter_regex, .. }) => {
+            let mut s = format!("id={} lines={}", id, lines);
+            if filter_regex.is_some() {
+                s.push_str(" filter=regex");
+            }
+            s
+        }
         Command::Status { id } => format!("id={}", id),
         Command::List { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
         Command::Wait { id, .. } => format!("id={}", id),
-        Command::Diff { id, .. } => format!("id={}", id),
+        Command::Diff { id, ref filter_regex, .. } => {
+            let mut s = format!("id={}", id);
+            if filter_regex.is_some() {
+                s.push_str(" filter=regex");
+            }
+            s
+        }
         Command::Send { id, .. } => format!("id={}", id),
         Command::Stats { id } => format!("id={}", id),
         Command::Expect { id, pattern, .. } => format!("id={} pattern=\"{}\"", id, pattern),
@@ -879,6 +1043,7 @@ fn args_summary(cmd: &Command) -> String {
         Command::ResizePty { id, cols, rows } => format!("id={} {}x{}", id, cols, rows),
         Command::Clean { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
         Command::RunGroup { jobs } => format!("{} jobs", jobs.len()),
+        Command::StreamLogs { id } => format!("id={}", id),
     }
 }
 

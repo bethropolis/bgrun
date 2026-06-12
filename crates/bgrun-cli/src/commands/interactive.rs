@@ -37,7 +37,7 @@ pub async fn start_menu() -> Result<()> {
             }
             Ok("Tail Job Logs") => {
                 if let Some(id) = select_active_job().await? {
-                    let _ = crate::commands::tail::tail(id, 20, false, None, None, false, false, false).await;
+                    let _ = crate::commands::tail::tail(id, 20, false, None, None, false, false, None, false).await;
                 }
             }
             Ok("Kill a Job") => {

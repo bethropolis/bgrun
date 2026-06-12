@@ -146,6 +146,7 @@ async fn test_proto_serialization_roundtrip() {
         env: [("RUST_LOG".into(), "debug".into())].into(),
         after: Some("db".into()),
         cwd: None,
+        allocate_port: None,
         pty_cols: None,
         pty_rows: None,
     };
@@ -176,6 +177,7 @@ async fn test_tail_args_serialization() {
         stream: None,
         cursor: None,
         follow: false,
+        filter_regex: None,
     };
     let json = serde_json::to_string(&args).unwrap();
     let parsed: TailArgs = serde_json::from_str(&json).unwrap();

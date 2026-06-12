@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +14,8 @@ use tokio::time::sleep;
 use tracing::{error, info};
 
 use crate::state;
+
+use bgrun_proto::LogLine;
 
 /// Shared sysinfo::System instance for resource monitoring.
 static SYSINFO_SYSTEM: once_cell::sync::Lazy<Arc<std::sync::Mutex<sysinfo::System>>> =
@@ -40,6 +43,11 @@ pub static JOB_BROADCASTS: once_cell::sync::Lazy<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<Vec<u8>>>>,
 > = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Broadcast senders for structured LogLine streams (used by StreamLogs).
+pub static LOG_BROADCASTS: once_cell::sync::Lazy<
+    Mutex<HashMap<String, tokio::sync::broadcast::Sender<bgrun_proto::LogLine>>>,
+> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
 // Re-export for convenience — the static is defined in state.rs so the
 // library crate (orphan.rs) and binary crate (runner.rs) share one instance.
 pub use crate::state::LIFECYCLE_NOTIFY;
@@ -50,8 +58,17 @@ pub static LOG_WRITE_LOCKS: once_cell::sync::Lazy<
     Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 > = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Binds to an ephemeral port to find a free one, then returns the port number.
+fn find_free_port() -> Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    // Drop listener to release the port so the child process can bind it
+    drop(listener);
+    Ok(port)
+}
+
 /// Spawns a new job process and returns its record.
-pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<JobRecord> {
+pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<JobRecord> {
     // Idempotency: if a named job is already alive, return it
     if let Some(ref name) = args.name {
         let store_ref = store.lock().await;
@@ -126,6 +143,23 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
         child_cmd.envs(&args.env);
     }
 
+    // Dynamic port allocation: find a free port and set it in the environment
+    let allocated_port = if let Some(ref var_name) = args.allocate_port {
+        match find_free_port() {
+            Ok(port) => {
+                child_cmd.env(var_name, port.to_string());
+                args.env.insert(var_name.clone(), port.to_string());
+                Some(port)
+            }
+            Err(e) => {
+                error!(id = %id, var = %var_name, error = %e, "failed to allocate port");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut child = child_cmd.spawn().context("failed to spawn process")?;
     let pid = child
         .id()
@@ -164,6 +198,7 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
     job.max_rss_mb = args.max_rss_mb;
     job.env = args.env.clone();
     job.cwd = args.cwd.clone();
+    job.allocated_port = allocated_port;
 
     state::write_meta(&job).await?;
     state::write_status(&job).await?;
@@ -210,6 +245,12 @@ pub async fn spawn_job(args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result<Job
                 }
             }
         });
+    }
+
+    // Create LogLine broadcast channel for StreamLogs
+    {
+        let (tx, _rx) = tokio::sync::broadcast::channel(4096);
+        LOG_BROADCASTS.lock().await.insert(id.clone(), tx);
     }
 
     // Spawn memory limit monitor if configured
@@ -299,6 +340,7 @@ async fn handle_job_exit(
     PTY_WRITERS.lock().await.remove(&id);
     PTY_PAIRS.lock().await.remove(&id);
     JOB_BROADCASTS.lock().await.remove(&id);
+    LOG_BROADCASTS.lock().await.remove(&id);
     LOG_WRITE_LOCKS.lock().await.remove(&id);
 
     // Persist status
@@ -429,6 +471,7 @@ async fn restart_job(id: String, store: Arc<Mutex<JobStore>>) {
         pty_cols: None, // use defaults
         pty_rows: None,
         max_rss_mb: job.max_rss_mb,
+        allocate_port: None, // port will be re-allocated on restart
     };
 
     // Remove the old crashed record from both store and disk so named
@@ -509,7 +552,7 @@ async fn poll_log_for_pattern(log_path: &std::path::Path, pattern: &str, timeout
 /// Attaches the process to the PTY slave, reads from the PTY master for
 /// output capture, and stores the PTY master writer for `send_stdin`.
 async fn spawn_pty_job(
-    args: RunArgs,
+    mut args: RunArgs,
     store: Arc<Mutex<JobStore>>,
     id: String,
     job_dir: std::path::PathBuf,
@@ -543,6 +586,23 @@ async fn spawn_pty_job(
     for (k, v) in &args.env {
         cmd_builder.env(k, v);
     }
+
+    // Dynamic port allocation
+    let allocated_port = if let Some(ref var_name) = args.allocate_port {
+        match find_free_port() {
+            Ok(port) => {
+                cmd_builder.env(var_name, port.to_string());
+                args.env.insert(var_name.clone(), port.to_string());
+                Some(port)
+            }
+            Err(e) => {
+                error!(id = %id, var = %var_name, error = %e, "failed to allocate port");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let child = slave
         .spawn_command(cmd_builder)
@@ -597,6 +657,7 @@ async fn spawn_pty_job(
     job.max_rss_mb = args.max_rss_mb;
     job.env = args.env.clone();
     job.cwd = args.cwd.clone();
+    job.allocated_port = allocated_port;
 
     state::write_meta(&job).await?;
     state::write_status(&job).await?;
@@ -642,6 +703,12 @@ async fn spawn_pty_job(
                 }
             }
         });
+    }
+
+    // Create LogLine broadcast channel for StreamLogs
+    {
+        let (tx, _rx) = tokio::sync::broadcast::channel(4096);
+        LOG_BROADCASTS.lock().await.insert(id.clone(), tx);
     }
 
     // Spawn memory limit monitor if configured
@@ -989,6 +1056,7 @@ async fn write_ts_line(
     let content = String::from_utf8_lossy(line)
         .trim_end_matches('\n')
         .to_string();
+    let content_for_broadcast = content.clone();
     let entry = bgrun_daemon::log_manager::DiskLogEntry {
         t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         s: label.to_string(),
@@ -1010,6 +1078,17 @@ async fn write_ts_line(
     if file.write_all(b"\n").await.is_err() {
         error!(id = %id, label = %label, "failed to write newline to log");
     }
+
+    // Broadcast the line for StreamLogs subscribers
+    let log_line = LogLine {
+        line_number: 0,
+        content: content_for_broadcast,
+        timestamp: Some(entry.t.clone()),
+    };
+    let broadcasts = LOG_BROADCASTS.lock().await;
+    if let Some(tx) = broadcasts.get(id) {
+        let _ = tx.send(log_line);
+    }
 }
 
 /// Synchronous version of write_ts_line for PTY capture (called from spawn_blocking).
@@ -1019,6 +1098,7 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     let content = String::from_utf8_lossy(line)
         .trim_end_matches('\n')
         .to_string();
+    let content_for_broadcast = content.clone();
     let entry = bgrun_daemon::log_manager::DiskLogEntry {
         t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         s: "pty".to_string(),
@@ -1033,6 +1113,20 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     if file.write_all(b"\n").is_err() {
         error!(id = %id, "failed to write newline to PTY log");
     }
+
+    // Broadcast the line for StreamLogs subscribers
+    let log_line = LogLine {
+        line_number: 0,
+        content: content_for_broadcast,
+        timestamp: Some(entry.t.clone()),
+    };
+    let rt = tokio::runtime::Handle::current();
+    rt.block_on(async {
+        let broadcasts = LOG_BROADCASTS.lock().await;
+        if let Some(tx) = broadcasts.get(id) {
+            let _ = tx.send(log_line);
+        }
+    });
 }
 
 /// Captures output from a PTY master reader (sync, called from spawn_blocking).

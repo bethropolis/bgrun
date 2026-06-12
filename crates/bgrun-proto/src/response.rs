@@ -30,6 +30,8 @@ pub struct JobRecord {
     pub max_rss_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allocated_port: Option<u16>,
 }
 
 /// Helper for serde skip_serializing_if on bool fields.
