@@ -127,6 +127,7 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         job.max_rss_mb = record.max_rss_mb;
         job.env = record.env;
         job.cwd = record.cwd;
+        job.allocated_port = record.allocated_port;
         jobs.push(job);
     }
 

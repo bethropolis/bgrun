@@ -44,6 +44,7 @@ pub struct Job {
     pub max_rss_mb: Option<u64>,
     pub env: HashMap<String, String>,
     pub cwd: Option<String>,
+    pub allocated_port: Option<u16>,
 }
 
 impl Job {
@@ -74,6 +75,7 @@ impl Job {
             max_rss_mb: None,
             env: HashMap::new(),
             cwd: None,
+            allocated_port: None,
         }
     }
 
@@ -133,6 +135,7 @@ impl Job {
             max_rss_mb: self.max_rss_mb,
             env: self.env.clone(),
             cwd: self.cwd.clone(),
+            allocated_port: self.allocated_port,
         }
     }
 }

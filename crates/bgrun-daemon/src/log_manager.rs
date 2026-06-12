@@ -22,7 +22,7 @@ pub struct DiskLogEntry {
 /// Falls back to treating the raw line as content if parsing fails
 /// (e.g. for legacy logs or empty lines).
 /// Returns (timestamp, stream, content).
-fn parse_line(raw: &str) -> (Option<String>, Option<String>, String) {
+pub fn parse_line(raw: &str) -> (Option<String>, Option<String>, String) {
     if let Ok(entry) = serde_json::from_str::<DiskLogEntry>(raw.trim()) {
         return (Some(entry.t), Some(entry.s), entry.c);
     }
@@ -30,11 +30,18 @@ fn parse_line(raw: &str) -> (Option<String>, Option<String>, String) {
 }
 
 /// Returns the last `n` lines from the job's stdout.log, optionally filtered
-/// by stream source ("stdout", "stderr", "pty", or None for all).
+/// by stream source ("stdout", "stderr", "pty", or None for all) and/or by
+/// a substring level filter (e.g. "error", "warn") and/or a regex pattern.
 ///
 /// First pass counts lines and tracks newline byte offsets as a ring buffer of N+1.
 /// Second pass reads only the needed portion from disk.
-pub async fn tail_lines(id: &str, n: usize, stream_filter: Option<&str>) -> Result<Vec<LogLine>> {
+pub async fn tail_lines(
+    id: &str,
+    n: usize,
+    stream_filter: Option<&str>,
+    level_filter: Option<&str>,
+    filter_regex: Option<&regex::Regex>,
+) -> Result<Vec<LogLine>> {
     let path = state::job_dir(id).join("stdout.log");
     let mut file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
         Ok(f) => f,
@@ -92,6 +99,16 @@ pub async fn tail_lines(id: &str, n: usize, stream_filter: Option<&str>) -> Resu
             let (timestamp, stream, content) = parse_line(line);
             if let Some(filter) = stream_filter {
                 if stream.as_deref() != Some(filter) {
+                    return None;
+                }
+            }
+            if let Some(lvl) = level_filter {
+                if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+                    return None;
+                }
+            }
+            if let Some(re) = filter_regex {
+                if !re.is_match(&content) {
                     return None;
                 }
             }
@@ -209,8 +226,15 @@ fn process_line(
 }
 
 /// Returns lines added after the given byte cursor, and the new cursor position.
-/// Optionally filters by stream source ("stdout", "stderr", "pty", or None for all).
-pub async fn diff_since(id: &str, cursor: u64, stream_filter: Option<&str>) -> Result<(Vec<LogLine>, u64)> {
+/// Optionally filters by stream source ("stdout", "stderr", "pty", or None for all),
+/// substring level filter ("error", "warn"), and/or regex pattern.
+pub async fn diff_since(
+    id: &str,
+    cursor: u64,
+    stream_filter: Option<&str>,
+    level_filter: Option<&str>,
+    filter_regex: Option<&regex::Regex>,
+) -> Result<(Vec<LogLine>, u64)> {
     let path = state::job_dir(id).join("stdout.log");
     let mut file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
         Ok(f) => f,
@@ -249,6 +273,16 @@ pub async fn diff_since(id: &str, cursor: u64, stream_filter: Option<&str>) -> R
             let (timestamp, stream, content) = parse_line(line);
             if let Some(filter) = stream_filter {
                 if stream.as_deref() != Some(filter) {
+                    return None;
+                }
+            }
+            if let Some(lvl) = level_filter {
+                if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+                    return None;
+                }
+            }
+            if let Some(re) = filter_regex {
+                if !re.is_match(&content) {
                     return None;
                 }
             }
@@ -335,5 +369,48 @@ mod tests {
         assert_eq!(lines[0], "line2");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_tail_lines_with_level_filter() {
+        // Create a real job directory under the daemon state path
+        let state_dir = crate::state::state_dir();
+        let job_dir = state_dir.join("jobs").join("test-level");
+        let _ = tokio::fs::create_dir_all(&job_dir).await;
+        let log = job_dir.join("stdout.log");
+        let _ = tokio::fs::write(
+            &log,
+            "info: starting\nwarn: low disk\nerror: oops\ninfo: done\n",
+        )
+        .await;
+
+        let result = diff_since("test-level", 0, None, Some("error"), None).await;
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+
+        let (lines, _cursor) = result.expect("diff_since should succeed");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].content.contains("error"));
+    }
+
+    #[tokio::test]
+    async fn test_tail_lines_with_regex_filter() {
+        let state_dir = crate::state::state_dir();
+        let job_dir = state_dir.join("jobs").join("test-regex");
+        let _ = tokio::fs::create_dir_all(&job_dir).await;
+        let log = job_dir.join("stdout.log");
+        let _ = tokio::fs::write(
+            &log,
+            "line1\nport=8080\nline3\nport=9090\n",
+        )
+        .await;
+
+        let re = regex::Regex::new("port=\\d+").ok();
+        let result = diff_since("test-regex", 0, None, None, re.as_ref()).await;
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+
+        let (lines, _cursor) = result.expect("diff_since should succeed");
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].content.contains("8080"));
+        assert!(lines[1].content.contains("9090"));
     }
 }

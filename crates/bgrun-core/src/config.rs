@@ -44,6 +44,8 @@ pub struct JobConfig {
     pub backoff_ms: Option<u64>,
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
+    #[serde(rename = "allocate-port")]
+    pub allocate_port: Option<String>,
 }
 
 /// Errors during config parsing or resolution.
@@ -124,6 +126,7 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         env: job.env.clone().unwrap_or_default(),
         after: job.after.clone(),
         cwd: job.cwd.clone(),
+        allocate_port: job.allocate_port.clone(),
         pty_cols: None,
         pty_rows: None,
     })

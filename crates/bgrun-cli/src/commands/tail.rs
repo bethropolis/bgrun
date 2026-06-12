@@ -1,6 +1,7 @@
 use anyhow::Result;
 use bgrun_proto::Command;
-use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
@@ -15,6 +16,7 @@ pub async fn tail(
     stream: Option<String>,
     strip_ansi: bool,
     follow: bool,
+    filter_regex: Option<String>,
     json: bool,
 ) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
@@ -32,6 +34,7 @@ pub async fn tail(
             stream: stream.clone(),
             cursor: None,
             follow,
+            filter_regex: filter_regex.clone(),
         }))
         .await?;
 
@@ -64,40 +67,68 @@ pub async fn tail(
             }
         }
 
-        // Follow mode: poll for new lines using cursor
+        // Follow mode: use StreamLogs for non-polling log stream
         if follow {
-            let mut cursor = data["cursor"].as_u64().unwrap_or(0);
-            loop {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let mut client = DaemonClient::connect(&socket_path).await?;
-                let resp = client
-                    .send::<serde_json::Value>(Command::Tail(bgrun_proto::TailArgs {
-                        id: id.clone(),
-                        lines: 0,
-                        digest: false,
-                        level: level.clone(),
-                        strip_ansi,
-                        stream: stream.clone(),
-                        cursor: Some(cursor),
-                        follow: false,
-                    }))
-                    .await?;
-                if !resp.ok {
-                    break;
+            stream_logs_follow(&socket_path, &id, json).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Connects to the daemon, sends a StreamLogs command, and prints live
+/// LogLine entries as they arrive (non-polling).
+async fn stream_logs_follow(
+    socket_path: &std::path::Path,
+    job_id: &str,
+    json: bool,
+) -> Result<()> {
+    let stream = UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut buf_reader = BufReader::new(reader);
+
+    // Send StreamLogs command
+    let request = bgrun_proto::Request {
+        id: uuid::Uuid::new_v4().to_string(),
+        command: Command::StreamLogs {
+            id: job_id.to_string(),
+        },
+    };
+    let cmd_json = serde_json::to_string(&request)?;
+    writer.write_all(cmd_json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+
+    // Read the initial control response
+    let mut buf = String::new();
+    buf_reader.read_line(&mut buf).await?;
+    let control: serde_json::Value = serde_json::from_str(buf.trim())?;
+    if !control["ok"].as_bool().unwrap_or(false) {
+        let err = control["error"].as_str().unwrap_or("stream failed");
+        anyhow::bail!("{}", err);
+    }
+
+    // Stream LogLine entries
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        match buf_reader.read_line(&mut line_buf).await {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line_buf.trim();
+                if trimmed.is_empty() {
+                    continue;
                 }
-                if let Some(d) = resp.data {
-                    if let Some(new_lines) = d["lines"].as_array() {
-                        if !new_lines.is_empty() {
-                            for line in new_lines {
-                                print_log_line(line);
-                            }
-                        }
-                    }
-                    if let Some(new_cursor) = d["cursor"].as_u64() {
-                        cursor = new_cursor;
+                if json {
+                    println!("{}", trimmed);
+                } else {
+                    match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(val) => print_log_line(&val),
+                        Err(_) => {}
                     }
                 }
             }
+            Err(_) => break,
         }
     }
 

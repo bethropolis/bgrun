@@ -89,6 +89,10 @@ enum Commands {
         /// Max runtime before the job is killed (e.g. "30s", "5m")
         #[arg(long)]
         max_runtime: Option<String>,
+
+        /// Allocate a free port and set it as the given env var name (e.g. "PORT")
+        #[arg(long)]
+        allocate_port: Option<String>,
     },
 
     /// List running jobs
@@ -152,6 +156,10 @@ enum Commands {
         /// Follow new log lines in real time (polls every 200ms)
         #[arg(long)]
         follow: bool,
+
+        /// Filter log lines by regex pattern
+        #[arg(long)]
+        filter_regex: Option<String>,
     },
 
     /// Show log lines since the last diff call
@@ -170,6 +178,10 @@ enum Commands {
         /// Strip ANSI escape codes from output
         #[arg(long)]
         strip_ansi: bool,
+
+        /// Filter log lines by regex pattern
+        #[arg(long)]
+        filter_regex: Option<String>,
     },
 
     /// Run multiple named jobs in parallel
@@ -289,6 +301,7 @@ async fn main() -> Result<()> {
             rows,
             max_rss,
             max_runtime,
+            allocate_port,
         }) => {
             let max_runtime_ms = max_runtime
                 .as_ref()
@@ -307,6 +320,7 @@ async fn main() -> Result<()> {
                 pty_rows: rows,
                 max_rss_mb: max_rss,
                 max_runtime_ms,
+                allocate_port,
             };
             commands::run::run(cmd, name, workspace, flags, json).await?;
         }
@@ -330,16 +344,18 @@ async fn main() -> Result<()> {
             stream,
             strip_ansi,
             follow,
+            filter_regex,
         }) => {
-            commands::tail::tail(id, lines, digest, level, stream, strip_ansi, follow, json).await?;
+            commands::tail::tail(id, lines, digest, level, stream, strip_ansi, follow, filter_regex, json).await?;
         }
         Some(Commands::Diff {
             id,
             lines,
             stream,
             strip_ansi,
+            filter_regex,
         }) => {
-            commands::diff::diff(id, lines, stream, strip_ansi, json).await?;
+            commands::diff::diff(id, lines, stream, strip_ansi, filter_regex, json).await?;
         }
         Some(Commands::RunGroup { names }) => {
             commands::run_group::run_group(names, json).await?;
