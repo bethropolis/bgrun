@@ -7,6 +7,20 @@ A background process runner for AI agents and automation workflows. Start proces
 
 ## Install
 
+### Quick install (Linux)
+
+```bash
+curl -fsSL https://bethropolis.github.io/bgrun/install.sh | sh
+```
+
+Downloads the latest prebuilt binary from GitHub releases.
+
+### AUR (Arch Linux)
+
+```
+yay -S bgrun-bin
+```
+
 ### Homebrew (Linux)
 
 ```bash
