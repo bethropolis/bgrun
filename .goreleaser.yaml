@@ -67,6 +67,7 @@ aurs:
     homepage: "https://github.com/bethropolis/bgrun"
     description: "Background process runner for development workflows"
     license: "MIT"
+    private_key: "{{ .Env.AUR_KEY }}"
     git_url: "ssh://aur@aur.archlinux.org/bgrun-bin.git"
     provides:
       - bgrun
