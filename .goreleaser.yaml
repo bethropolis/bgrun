@@ -38,7 +38,8 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
-      - docs/*
+      - src: docs/man/bgrun-daemon.1
+        dst: docs/man/bgrun-daemon.1
 
 homebrew_casks:
   - name: bgrun
