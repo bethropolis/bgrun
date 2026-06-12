@@ -1,5 +1,4 @@
 use anyhow::Result;
-use bgrun_proto::{Command, JobRecord};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -86,6 +85,10 @@ enum Commands {
         /// Max RSS in MB before the job is killed
         #[arg(long)]
         max_rss: Option<u64>,
+
+        /// Max runtime before the job is killed (e.g. "30s", "5m")
+        #[arg(long)]
+        max_runtime: Option<String>,
     },
 
     /// List running jobs
@@ -230,6 +233,14 @@ enum Commands {
         /// Print unique active workspaces
         #[arg(long)]
         workspaces: bool,
+
+        /// Generate completion script for a shell (fish, bash, zsh)
+        #[arg(long)]
+        shell: Option<String>,
+
+        /// Generate and print the CLI man page (troff format)
+        #[arg(long)]
+        man: bool,
     },
 
     /// Remove all terminated (crashed/exited/killed) jobs
@@ -277,7 +288,11 @@ async fn main() -> Result<()> {
             cols,
             rows,
             max_rss,
+            max_runtime,
         }) => {
+            let max_runtime_ms = max_runtime
+                .as_ref()
+                .and_then(|s| commands::run::parse_duration_ms(s));
             let flags = commands::run::RunFlags {
                 ready_when,
                 ready_when_regex,
@@ -291,6 +306,7 @@ async fn main() -> Result<()> {
                 pty_cols: cols,
                 pty_rows: rows,
                 max_rss_mb: max_rss,
+                max_runtime_ms,
             };
             commands::run::run(cmd, name, workspace, flags, json).await?;
         }
@@ -348,34 +364,11 @@ async fn main() -> Result<()> {
         Some(Commands::Schema { command }) => {
             commands::schema::print_schema(command.as_deref())?;
         }
-        Some(Commands::Completions { active_ids, workspaces }) => {
-            let socket_path = bgrun_proto::paths::socket_path();
-            if let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await {
-                if let Ok(response) = client.send::<Vec<JobRecord>>(Command::List { workspace: None }).await {
-                    if let Some(records) = response.data {
-                        if active_ids {
-                            for r in records {
-                                let id_short = if r.id.len() > 8 { &r.id[..8] } else { &r.id };
-                                let name = r.name.as_deref().unwrap_or("unnamed");
-                                println!("{}\t{} ({})", id_short, name, r.state);
-                            }
-                        } else if workspaces {
-                            let mut unique_ws = std::collections::HashSet::new();
-                            for r in records {
-                                if let Some(ref ws) = r.workspace {
-                                    unique_ws.insert(ws.clone());
-                                }
-                            }
-                            for ws in unique_ws {
-                                println!("{}", ws);
-                            }
-                        }
-                    }
-                }
-            }
+        Some(Commands::Completions { active_ids, workspaces, shell, man }) => {
+            commands::completions::completions(active_ids, workspaces, shell, man).await?;
         }
         Some(Commands::Clean { workspace }) => {
-            commands::clean::clean(workspace).await?;
+            commands::clean::clean(workspace, json).await?;
         }
         Some(Commands::Skill { command }) => match command {
             SkillCommands::Install { path } => {

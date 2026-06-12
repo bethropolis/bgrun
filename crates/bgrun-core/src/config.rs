@@ -35,6 +35,15 @@ pub struct JobConfig {
     pub restart: Option<String>,
     pub workspace: Option<String>,
     pub after: Option<String>,
+    pub pty: Option<bool>,
+    #[serde(rename = "max-rss-mb")]
+    pub max_rss_mb: Option<u64>,
+    #[serde(rename = "max-runtime-ms")]
+    pub max_runtime_ms: Option<u64>,
+    #[serde(rename = "backoff-ms")]
+    pub backoff_ms: Option<u64>,
+    pub cwd: Option<String>,
+    pub env: Option<HashMap<String, String>>,
 }
 
 /// Errors during config parsing or resolution.
@@ -96,9 +105,10 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
                 .map(|f| ReadinessStrategy::FileExists(f.clone()))
         });
 
-    // Resolve restart policy from config string
+    // Resolve restart policy from config string with optional backoff
+    let backoff_ms = job.backoff_ms.unwrap_or(2000);
     let restart = job.restart.as_deref().and_then(|s| match s {
-        "on-crash" => Some(RestartPolicy::OnCrash { backoff_ms: 2000 }),
+        "on-crash" => Some(RestartPolicy::OnCrash { backoff_ms }),
         _ => None,
     });
 
@@ -108,12 +118,12 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Confi
         workspace: job.workspace.clone(),
         readiness,
         restart,
-        pty: false,
-        max_runtime_ms: None,
-        max_rss_mb: None,
-        env: HashMap::new(),
+        pty: job.pty.unwrap_or(false),
+        max_runtime_ms: job.max_runtime_ms,
+        max_rss_mb: job.max_rss_mb,
+        env: job.env.clone().unwrap_or_default(),
         after: job.after.clone(),
-        cwd: None,
+        cwd: job.cwd.clone(),
         pty_cols: None,
         pty_rows: None,
     })

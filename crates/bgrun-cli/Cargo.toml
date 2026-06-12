@@ -22,3 +22,4 @@ shlex = { workspace = true }
 futures-util = { workspace = true }
 schemars = { workspace = true }
 inquire = { workspace = true }
+clap_mangen = { workspace = true }

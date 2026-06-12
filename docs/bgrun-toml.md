@@ -39,6 +39,12 @@ restart = "on-crash"
 | `restart` | string | `"on-crash"` — restart if the process exits with non-zero code or is killed by signal. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
+| `pty` | bool | Allocate a pseudo-terminal for the child process. |
+| `max-rss-mb` | integer | Kill the job if its RSS exceeds this value (MB). |
+| `max-runtime-ms` | integer | Kill the job after this many milliseconds. |
+| `backoff-ms` | integer | Base backoff in ms for restart delay (default: 2000). Doubles each consecutive failure, capped at 5 min. |
+| `cwd` | string | Working directory for the job. |
+| `env` | table | Environment variables, e.g. `env = { FOO = "bar", BAZ = "qux" }`. |
 
 A maximum of one readiness strategy can be configured. If multiple are specified, the CLI picks the first one found in order: `ready-when`, `ready-when-port`, `ready-when-url`, `ready-when-file`.
 

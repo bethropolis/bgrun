@@ -33,3 +33,5 @@ crossterm = "0.28"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 schemars = "0.8"
 inquire = "0.7"
+tokio-util = "0.7"
+clap_mangen = "0.2"

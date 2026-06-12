@@ -21,6 +21,7 @@ pub struct RunFlags {
     pub pty_cols: Option<u16>,
     pub pty_rows: Option<u16>,
     pub max_rss_mb: Option<u64>,
+    pub max_runtime_ms: Option<u64>,
 }
 
 /// Runs a command in the background via the daemon.
@@ -94,7 +95,7 @@ pub async fn run(
         readiness,
         restart,
         pty: flags.pty,
-        max_runtime_ms: None,
+        max_runtime_ms: flags.max_runtime_ms,
         env: HashMap::new(),
         after: flags.after,
         max_rss_mb: flags.max_rss_mb,
@@ -143,6 +144,11 @@ async fn find_config(start: std::path::PathBuf) -> Option<std::path::PathBuf> {
 
 /// Parses a backoff duration string like "2s", "500ms" into milliseconds.
 fn parse_backoff_ms(s: &str) -> Option<u64> {
+    parse_duration_ms(s)
+}
+
+/// Parses a duration string like "30s", "5m", "500ms" into milliseconds.
+pub fn parse_duration_ms(s: &str) -> Option<u64> {
     let s = s.trim();
     if let Some(n) = s.strip_suffix("ms") {
         n.parse().ok()
