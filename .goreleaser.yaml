@@ -93,6 +93,48 @@ aurs:
       install -Dm644 docs/man/bgrun-daemon.1 "${pkgdir}/usr/share/man/man1/bgrun-daemon.1"
     commit_msg_template: "Update to {{ .Tag }}"
 
+nfpms:
+  - id: packages
+    package_name: bgrun
+    file_name_template: >-
+      {{ .PackageName }}_
+      {{- .Version }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    vendor: bethropolis
+    homepage: https://github.com/bethropolis/bgrun
+    maintainer: bethropolis
+    description: |
+      Background process runner for AI agents and automation workflows.
+      Start processes, check status, tail logs, and kill them over a Unix
+      socket with JSON output. The daemon auto-starts on first CLI use.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/bgrun/README.md
+      - src: docs/man/bgrun-daemon.1
+        dst: /usr/share/man/man1/bgrun-daemon.1
+      - src: packaging/completions/bgrun.bash
+        dst: /etc/bash_completion.d/bgrun
+        packager: deb
+      - src: packaging/completions/bgrun.bash
+        dst: /etc/bash_completion.d/bgrun
+        packager: rpm
+      - src: packaging/completions/bgrun.fish
+        dst: /usr/share/fish/vendor_completions.d/bgrun.fish
+      - src: packaging/completions/bgrun.zsh
+        dst: /usr/share/zsh/site-functions/_bgrun
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+    rpm:
+      summary: Background process runner for development workflows
+
 checksum:
   name_template: checksums.txt
 
