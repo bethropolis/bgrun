@@ -113,6 +113,37 @@ if $install_skill; then
   fi
 fi
 
+echo "==> Installing shell completions..."
+completions_src="${repo_root}/packaging/completions"
+
+# Fish
+if command -v fish >/dev/null 2>&1; then
+  fish_completions_dir="${HOME}/.config/fish/completions"
+  mkdir -p "$fish_completions_dir"
+  install -m 0644 "${completions_src}/bgrun.fish" "${fish_completions_dir}/bgrun.fish"
+  echo "  fish:   ${fish_completions_dir}/bgrun.fish"
+fi
+
+# Bash (user-local, compatible with bash-completion@2)
+if command -v bash >/dev/null 2>&1; then
+  bash_completions_dir="${HOME}/.local/share/bash-completion/completions"
+  mkdir -p "$bash_completions_dir"
+  install -m 0644 "${completions_src}/bgrun.bash" "${bash_completions_dir}/bgrun"
+  echo "  bash:   ${bash_completions_dir}/bgrun"
+fi
+
+# Zsh
+if command -v zsh >/dev/null 2>&1; then
+  zsh_completions_dir="${HOME}/.zsh/completions"
+  mkdir -p "$zsh_completions_dir"
+  install -m 0644 "${completions_src}/bgrun.zsh" "${zsh_completions_dir}/_bgrun"
+  echo "  zsh:    ${zsh_completions_dir}/_bgrun"
+  # Ensure ~/.zsh/completions is in fpath
+  if ! grep -qF "${zsh_completions_dir}" "${HOME}/.zshrc" 2>/dev/null; then
+    echo "  zsh:    Add 'fpath+=(\"${zsh_completions_dir}\")' to ~/.zshrc and run 'compinit'"
+  fi
+fi
+
 if [[ ":$PATH:" != *":${install_dir}:"* ]]; then
   echo
   echo "==> PATH update needed"
