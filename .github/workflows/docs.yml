@@ -58,6 +58,9 @@ jobs:
       - name: Build Book
         run: mdbook build
 
+      - name: Copy install script
+        run: cp scripts/install.sh book/install.sh
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
