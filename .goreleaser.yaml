@@ -106,7 +106,7 @@ nfpms:
     homepage: https://github.com/bethropolis/bgrun
     maintainer: bethropolis
     description: |
-      Background process runner for AI agents and automation workflows.
+      Background process runner for development workflows.
       Start processes, check status, tail logs, and kill them over a Unix
       socket with JSON output. The daemon auto-starts on first CLI use.
     license: MIT
@@ -142,8 +142,73 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
+  use: github
   sort: asc
+  abbrev: 0
+  groups:
+    - title: "New Features"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Bug Fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "Other Changes"
+      order: 999
   filters:
     exclude:
       - "^docs:"
+      - "^chore:"
+      - "^ci:"
       - "^test:"
+      - "^refactor:"
+      - "typo"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  name_template: "v{{.Version}}"
+  draft: false
+  prerelease: auto
+  make_latest: true
+  header: |
+    ## bgrun v{{ .Version }}
+
+    Background process runner for development workflows.
+
+    ### Installation
+
+    **Arch Linux:**
+    ```bash
+    yay -S bgrun-bin
+    ```
+
+    **Debian / Ubuntu:**
+    ```bash
+    curl -LO https://github.com/bethropolis/bgrun/releases/download/v{{ .Version }}/bgrun_{{ .Version }}_x86_64.deb
+    sudo dpkg -i bgrun_{{ .Version }}_x86_64.deb
+    ```
+
+    **Fedora / RHEL:**
+    ```bash
+    curl -LO https://github.com/bethropolis/bgrun/releases/download/v{{ .Version }}/bgrun_{{ .Version }}_x86_64.rpm
+    sudo rpm -i bgrun_{{ .Version }}_x86_64.rpm
+    ```
+
+    **Homebrew:**
+    ```bash
+    brew install bethropolis/tap/bgrun
+    ```
+
+    **Quick install:**
+    ```bash
+    curl -fsSL https://bethropolis.github.io/bgrun/install.sh | sh
+    ```
+
+    **Tarball:**
+    ```bash
+    curl -LO https://github.com/bethropolis/bgrun/releases/download/v{{ .Version }}/bgrun_{{ .Version }}_linux_x86_64.tar.gz
+    tar -xzf bgrun_{{ .Version }}_linux_x86_64.tar.gz
+    sudo mv bgrun bgrun-daemon /usr/local/bin/
+    ```
+  footer: |
+    **Full Changelog:** https://github.com/bethropolis/bgrun/compare/{{ .PreviousTag }}...v{{ .Version }}
