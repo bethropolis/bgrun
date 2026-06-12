@@ -1,3 +1,7 @@
 /target
 /.zig-cache/
 Cargo.lock
+
+# mdBook output
+/book/
+/docs/book-src/
