@@ -23,6 +23,10 @@ pub struct RunFlags {
     pub max_rss_mb: Option<u64>,
     pub max_runtime_ms: Option<u64>,
     pub allocate_port: Option<String>,
+    pub health_check_url: Option<String>,
+    pub health_check_port: Option<u16>,
+    pub health_interval: Option<u64>,
+    pub health_threshold: Option<u32>,
 }
 
 /// Runs a command in the background via the daemon.
@@ -89,6 +93,12 @@ pub async fn run(
         _ => None,
     };
 
+    // Resolve health check strategy
+    let health_check = flags
+        .health_check_url
+        .map(|u| ReadinessStrategy::HttpPoll(u.clone()))
+        .or_else(|| flags.health_check_port.map(ReadinessStrategy::TcpPort));
+
     let args = RunArgs {
         cmd,
         name,
@@ -104,6 +114,9 @@ pub async fn run(
         pty_cols: flags.pty_cols,
         pty_rows: flags.pty_rows,
         allocate_port: flags.allocate_port,
+        health_check,
+        health_interval_secs: flags.health_interval,
+        health_threshold: flags.health_threshold,
     };
 
     let response = client.send::<JobRecord>(Command::Run(args)).await?;

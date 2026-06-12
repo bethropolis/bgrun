@@ -262,6 +262,18 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         });
     }
 
+    // Spawn health check loop if configured
+    if let Some(ref strategy) = args.health_check {
+        let checker = bgrun_daemon::readiness::build_checker(strategy, &job_dir);
+        let store_clone = store.clone();
+        let id_clone = id.clone();
+        let interval = args.health_interval_secs.unwrap_or(10);
+        let threshold = args.health_threshold.unwrap_or(3);
+        tokio::spawn(async move {
+            monitor_health_loop(id_clone, store_clone, checker, interval, threshold).await;
+        });
+    }
+
     info!(pid, id = %id, cmd = %cmd.join(" "), "job spawned");
     LIFECYCLE_NOTIFY.notify_one();
     Ok(record)
@@ -472,6 +484,9 @@ async fn restart_job(id: String, store: Arc<Mutex<JobStore>>) {
         pty_rows: None,
         max_rss_mb: job.max_rss_mb,
         allocate_port: None, // port will be re-allocated on restart
+        health_check: job.health_check.clone(),
+        health_interval_secs: job.health_interval_secs,
+        health_threshold: job.health_threshold,
     };
 
     // Remove the old crashed record from both store and disk so named
@@ -717,6 +732,18 @@ async fn spawn_pty_job(
         let id_clone = id.clone();
         tokio::spawn(async move {
             monitor_memory_limit(id_clone, max_rss_mb, store_clone).await;
+        });
+    }
+
+    // Spawn health check loop if configured
+    if let Some(ref strategy) = args.health_check {
+        let checker = bgrun_daemon::readiness::build_checker(strategy, &job_dir);
+        let store_clone = store.clone();
+        let id_clone = id.clone();
+        let interval = args.health_interval_secs.unwrap_or(10);
+        let threshold = args.health_threshold.unwrap_or(3);
+        tokio::spawn(async move {
+            monitor_health_loop(id_clone, store_clone, checker, interval, threshold).await;
         });
     }
 
@@ -970,6 +997,56 @@ async fn monitor_memory_limit(
                 tracing::warn!(id = %id, rss_mb, max_rss_mb, "memory limit exceeded, killing job");
                 let _ = kill_job(&id, store.clone()).await;
                 break;
+            }
+        }
+    }
+}
+
+/// Continuously checks a job's health once it becomes Ready.
+/// Kills the job (triggering restart backoff) if health fails consecutively.
+async fn monitor_health_loop(
+    id: String,
+    store: Arc<Mutex<JobStore>>,
+    checker: Box<dyn bgrun_daemon::readiness::ReadinessChecker>,
+    interval_secs: u64,
+    threshold: u32,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    interval.tick().await; // skip first immediate tick
+    let mut consecutive_failures = 0u32;
+
+    loop {
+        interval.tick().await;
+
+        let (is_alive, is_ready) = {
+            let store_ref = store.lock().await;
+            match store_ref.get(&id) {
+                Some(j) => (j.is_alive(), j.state == bgrun_proto::JobState::Ready),
+                None => (false, false),
+            }
+        };
+
+        if !is_alive {
+            break;
+        }
+
+        if is_ready {
+            if checker.check().await {
+                consecutive_failures = 0;
+            } else {
+                consecutive_failures += 1;
+                tracing::warn!(
+                    id = %id,
+                    consecutive_failures,
+                    threshold,
+                    "job health probe failed"
+                );
+
+                if consecutive_failures >= threshold {
+                    tracing::error!(id = %id, "health check threshold breached, killing job");
+                    let _ = kill_job(&id, store.clone()).await;
+                    break;
+                }
             }
         }
     }

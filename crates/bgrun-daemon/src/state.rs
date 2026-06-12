@@ -128,6 +128,9 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         job.env = record.env;
         job.cwd = record.cwd;
         job.allocated_port = record.allocated_port;
+        job.health_check = record.health_check;
+        job.health_interval_secs = record.health_interval_secs;
+        job.health_threshold = record.health_threshold;
         jobs.push(job);
     }
 

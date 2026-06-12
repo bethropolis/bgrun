@@ -45,6 +45,9 @@ pub struct Job {
     pub env: HashMap<String, String>,
     pub cwd: Option<String>,
     pub allocated_port: Option<u16>,
+    pub health_check: Option<ReadinessStrategy>,
+    pub health_interval_secs: Option<u64>,
+    pub health_threshold: Option<u32>,
 }
 
 impl Job {
@@ -76,6 +79,9 @@ impl Job {
             env: HashMap::new(),
             cwd: None,
             allocated_port: None,
+            health_check: None,
+            health_interval_secs: None,
+            health_threshold: None,
         }
     }
 
@@ -136,6 +142,9 @@ impl Job {
             env: self.env.clone(),
             cwd: self.cwd.clone(),
             allocated_port: self.allocated_port,
+            health_check: self.health_check.clone(),
+            health_interval_secs: self.health_interval_secs,
+            health_threshold: self.health_threshold,
         }
     }
 }

@@ -93,6 +93,22 @@ enum Commands {
         /// Allocate a free port and set it as the given env var name (e.g. "PORT")
         #[arg(long)]
         allocate_port: Option<String>,
+
+        /// Health check URL to poll (e.g. http://localhost:8080/health)
+        #[arg(long)]
+        health_check_url: Option<String>,
+
+        /// Health check TCP port to probe
+        #[arg(long)]
+        health_check_port: Option<u16>,
+
+        /// Health check polling interval in seconds (default 10)
+        #[arg(long)]
+        health_interval: Option<u64>,
+
+        /// Consecutive health check failures before killing (default 3)
+        #[arg(long)]
+        health_threshold: Option<u32>,
     },
 
     /// List running jobs
@@ -302,6 +318,10 @@ async fn main() -> Result<()> {
             max_rss,
             max_runtime,
             allocate_port,
+            health_check_url,
+            health_check_port,
+            health_interval,
+            health_threshold,
         }) => {
             let max_runtime_ms = max_runtime
                 .as_ref()
@@ -321,6 +341,10 @@ async fn main() -> Result<()> {
                 max_rss_mb: max_rss,
                 max_runtime_ms,
                 allocate_port,
+                health_check_url,
+                health_check_port,
+                health_interval,
+                health_threshold,
             };
             commands::run::run(cmd, name, workspace, flags, json).await?;
         }

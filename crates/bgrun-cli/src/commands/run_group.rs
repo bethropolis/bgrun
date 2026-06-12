@@ -38,6 +38,9 @@ pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
                 after: None,
                 cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
                 allocate_port: None,
+                health_check: None,
+                health_interval_secs: None,
+                health_threshold: None,
                 pty_cols: None,
                 pty_rows: None,
             }
