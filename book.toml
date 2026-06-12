@@ -1,0 +1,9 @@
+[book]
+title = "bgrun Documentation"
+authors = ["Bethropolis"]
+description = "Background process runner for AI agents and automation workflows"
+src = "docs/book-src"
+
+[output.html]
+git-repository-url = "https://github.com/bethropolis/bgrun"
+preferred-dark-theme = "navy"
