@@ -52,7 +52,8 @@ pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("run-group: {err}");
     }
 
     if let Some(records) = response.data {

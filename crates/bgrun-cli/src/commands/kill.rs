@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bgrun_proto::{Command, KillArgs};
+use inquire::Confirm;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
@@ -9,6 +10,16 @@ use crate::output::output_mode;
 pub async fn kill(id: Option<String>, workspace: Option<String>, json: bool) -> Result<()> {
     if id.is_none() && workspace.is_none() {
         anyhow::bail!("either --id or --workspace must be specified");
+    }
+
+    if workspace.is_some() && output_mode(json) == crate::output::OutputMode::Human {
+        let confirm = Confirm::new("Kill all jobs in this workspace?")
+            .with_default(false)
+            .prompt()?;
+        if !confirm {
+            println!("Aborted.");
+            return Ok(());
+        }
     }
 
     let socket_path = bgrun_proto::paths::socket_path();
@@ -25,7 +36,8 @@ pub async fn kill(id: Option<String>, workspace: Option<String>, json: bool) -> 
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("kill: {err}");
     }
 
     if output_mode(json) == crate::output::OutputMode::Json {

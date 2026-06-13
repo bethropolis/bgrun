@@ -20,7 +20,8 @@ pub async fn send(id: String, data: String, json: bool) -> Result<()> {
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("send: {err}");
     }
 
     if output_mode(json) == crate::output::OutputMode::Human {

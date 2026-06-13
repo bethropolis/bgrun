@@ -17,7 +17,8 @@ pub async fn stats(id: String, json: bool) -> Result<()> {
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("stats: {err}");
     }
 
     if let Some(stats) = response.data {

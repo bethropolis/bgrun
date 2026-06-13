@@ -5,6 +5,7 @@ use bgrun_proto::{Command, JobRecord, ReadinessStrategy, RunArgs};
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
+use crate::duration::parse_duration_ms;
 use crate::output::{output_mode, print_job};
 
 /// Optional flags for the run command.
@@ -83,14 +84,14 @@ pub async fn run(
     // Resolve restart policy
     let restart = match flags.restart.as_deref() {
         Some("on-crash") => {
-            let backoff_ms = flags
-                .backoff
-                .as_ref()
-                .and_then(|b| parse_backoff_ms(b))
-                .unwrap_or(2000);
+            let backoff_ms = match flags.backoff {
+                Some(ref b) => Some(parse_duration_ms(b)?),
+                None => None,
+            }.unwrap_or(2000);
             Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms })
         }
-        _ => None,
+        Some(other) => anyhow::bail!("invalid restart policy: {other:?} (expected 'on-crash')"),
+        None => None,
     };
 
     // Resolve health check strategy
@@ -122,7 +123,8 @@ pub async fn run(
     let response = client.send::<JobRecord>(Command::Run(args)).await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("run: {err}");
     }
 
     if let Some(record) = response.data {
@@ -157,21 +159,4 @@ async fn find_config(start: std::path::PathBuf) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Parses a backoff duration string like "2s", "500ms" into milliseconds.
-fn parse_backoff_ms(s: &str) -> Option<u64> {
-    parse_duration_ms(s)
-}
 
-/// Parses a duration string like "30s", "5m", "500ms" into milliseconds.
-pub fn parse_duration_ms(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix("ms") {
-        n.parse().ok()
-    } else if let Some(n) = s.strip_suffix('s') {
-        n.parse::<u64>().ok().map(|n| n * 1_000)
-    } else if let Some(n) = s.strip_suffix('m') {
-        n.parse::<u64>().ok().map(|n| n * 60_000)
-    } else {
-        s.parse::<u64>().ok().map(|n| n * 1_000)
-    }
-}

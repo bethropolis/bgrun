@@ -3,22 +3,8 @@ use bgrun_proto::{Command, WaitResult};
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
+use crate::duration::parse_duration_ms;
 use crate::output::output_mode;
-
-/// Parses a duration string like "5s", "30s", "2m" into milliseconds.
-fn parse_duration_ms(s: &str) -> Result<u64> {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix('s') {
-        Ok(n.parse::<u64>()? * 1_000)
-    } else if let Some(n) = s.strip_suffix('m') {
-        Ok(n.parse::<u64>()? * 60_000)
-    } else if let Some(n) = s.strip_suffix('h') {
-        Ok(n.parse::<u64>()? * 3_600_000)
-    } else {
-        // Assume seconds if no suffix
-        Ok(s.parse::<u64>()? * 1_000)
-    }
-}
 
 /// Waits for a job to become ready or until timeout.
 pub async fn wait(id: String, timeout: String, json: bool) -> Result<()> {
@@ -33,15 +19,26 @@ pub async fn wait(id: String, timeout: String, json: bool) -> Result<()> {
         eprintln!("Waiting for job {} (timeout: {})...", id, timeout);
     }
 
-    let response = client
-        .send::<WaitResult>(Command::Wait {
+    let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        let _ = cancel_tx.send(()).await;
+    });
+
+    let response = tokio::select! {
+        result = client.send::<WaitResult>(Command::Wait {
             id: id.clone(),
             timeout_ms,
-        })
-        .await?;
+        }) => result?,
+        _ = cancel_rx.recv() => {
+            println!("\nCancelled.");
+            return Ok(());
+        }
+    };
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("wait: {err}");
     }
 
     if let Some(result) = response.data {

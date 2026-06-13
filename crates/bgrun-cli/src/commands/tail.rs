@@ -39,7 +39,8 @@ pub async fn tail(
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("tail: {err}");
     }
 
     if let Some(data) = response.data {
@@ -105,7 +106,7 @@ async fn stream_logs_follow(
     let control: serde_json::Value = serde_json::from_str(buf.trim())?;
     if !control["ok"].as_bool().unwrap_or(false) {
         let err = control["error"].as_str().unwrap_or("stream failed");
-        anyhow::bail!("{}", err);
+        anyhow::bail!("tail --follow: {err}");
     }
 
     // Stream LogLine entries

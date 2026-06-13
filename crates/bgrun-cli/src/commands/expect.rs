@@ -3,6 +3,7 @@ use bgrun_proto::Command;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
+use crate::duration::parse_duration_ms;
 use crate::output::output_mode;
 
 /// Waits for a pattern in a job's log output.
@@ -10,21 +11,36 @@ pub async fn expect(id: String, pattern: String, is_regex: bool, timeout: String
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
-    let timeout_ms = parse_timeout_ms(&timeout)?;
+    let timeout_ms = parse_duration_ms(&timeout)?;
 
     let mut client = DaemonClient::connect(&socket_path).await?;
 
-    let response = client
-        .send::<serde_json::Value>(Command::Expect {
+    if output_mode(json) == crate::output::OutputMode::Human {
+        eprintln!("Waiting for pattern in job {} (timeout: {})...", id, timeout);
+    }
+
+    let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        let _ = cancel_tx.send(()).await;
+    });
+
+    let response = tokio::select! {
+        result = client.send::<serde_json::Value>(Command::Expect {
             id: id.clone(),
             pattern,
             is_regex,
             timeout_ms,
-        })
-        .await?;
+        }) => result?,
+        _ = cancel_rx.recv() => {
+            println!("\nCancelled.");
+            return Ok(());
+        }
+    };
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("expect: {err}");
     }
 
     if let Some(data) = response.data {
@@ -47,28 +63,4 @@ pub async fn expect(id: String, pattern: String, is_regex: bool, timeout: String
     Ok(())
 }
 
-/// Parses a duration string like "5s", "30s", "2m", "1h" into milliseconds.
-fn parse_timeout_ms(s: &str) -> Result<u64> {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix("ms") {
-        n.parse::<u64>()
-            .map_err(|_| anyhow::anyhow!("invalid timeout: {s}"))
-    } else if let Some(n) = s.strip_suffix('s') {
-        n.parse::<u64>()
-            .map(|n| n * 1_000)
-            .map_err(|_| anyhow::anyhow!("invalid timeout: {s}"))
-    } else if let Some(n) = s.strip_suffix('m') {
-        n.parse::<u64>()
-            .map(|n| n * 60_000)
-            .map_err(|_| anyhow::anyhow!("invalid timeout: {s}"))
-    } else if let Some(n) = s.strip_suffix('h') {
-        n.parse::<u64>()
-            .map(|n| n * 3_600_000)
-            .map_err(|_| anyhow::anyhow!("invalid timeout: {s}"))
-    } else {
-        // treat bare number as seconds
-        s.parse::<u64>()
-            .map(|n| n * 1_000)
-            .map_err(|_| anyhow::anyhow!("invalid timeout: {s}"))
-    }
-}
+
