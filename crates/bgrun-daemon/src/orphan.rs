@@ -95,6 +95,11 @@ async fn poll_adopted_job(id: String, pid: u32, store: Arc<Mutex<JobStore>>) {
 
 /// Checks if a process is alive using kill(pid, 0).
 fn is_process_alive(pid: u32) -> bool {
+    // SAFETY: kill(2) with signal 0 (null signal) only checks
+    // whether the process exists and we have permission to signal it;
+    // no actual signal is sent. The pid originates from the kernel's
+    // own PID assignment and is passed by value — no pointer or
+    // memory-safety concern exists.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 

@@ -354,7 +354,7 @@ async fn main() -> Result<()> {
             health_threshold,
         }) => {
             let max_runtime_ms = match max_runtime {
-                Some(ref s) => Some(duration::parse_duration_ms(s)?),
+                Some(ref s) => Some(s.parse::<duration::BgrunDuration>()?.0),
                 None => None,
             };
             let flags = commands::run::RunFlags {
@@ -455,7 +455,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Skill { command }) => match command {
             SkillCommands::Install { path } => {
-                commands::skill::install(path)?;
+                commands::skill::install(path).await?;
             }
         },
         None => {

@@ -1,26 +1,14 @@
-use std::fmt;
-
 use bgrun_proto::{JobState, ReadinessStrategy, RestartPolicy};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use thiserror::Error;
 
 /// Errors that can occur during job operations.
-#[derive(Debug)]
-pub enum JobError {
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("invalid transition from {from} to {to}")]
     InvalidTransition { from: JobState, to: JobState },
 }
-
-impl fmt::Display for JobError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            JobError::InvalidTransition { from, to } => {
-                write!(f, "invalid transition from {from} to {to}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for JobError {}
 
 /// A managed process tracked by the daemon.
 #[derive(Clone)]
@@ -91,7 +79,7 @@ impl Job {
     /// - Starting -> Running, Ready
     /// - Running -> Ready, Exited, Crashed, Killed
     /// - Ready -> Exited, Crashed, Killed
-    pub fn transition(&mut self, next: JobState) -> Result<(), JobError> {
+    pub fn transition(&mut self, next: JobState) -> Result<(), Error> {
         let valid = matches!(
             (&self.state, &next),
             (JobState::Starting, JobState::Running)
@@ -106,7 +94,7 @@ impl Job {
         );
 
         if !valid {
-            return Err(JobError::InvalidTransition {
+            return Err(Error::InvalidTransition {
                 from: self.state.clone(),
                 to: next,
             });
@@ -235,7 +223,7 @@ mod tests {
         job.transition(JobState::Running).unwrap();
         job.transition(JobState::Killed).unwrap();
         let err = job.transition(JobState::Ready).unwrap_err();
-        assert!(matches!(err, JobError::InvalidTransition { .. }));
+        assert!(matches!(err, Error::InvalidTransition { .. }));
     }
 
     #[test]
@@ -244,7 +232,7 @@ mod tests {
         job.transition(JobState::Running).unwrap();
         job.transition(JobState::Exited).unwrap();
         let err = job.transition(JobState::Running).unwrap_err();
-        assert!(matches!(err, JobError::InvalidTransition { .. }));
+        assert!(matches!(err, Error::InvalidTransition { .. }));
     }
 
     #[test]
@@ -273,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = JobError::InvalidTransition {
+        let err = Error::InvalidTransition {
             from: JobState::Killed,
             to: JobState::Ready,
         };

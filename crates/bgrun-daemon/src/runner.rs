@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -19,35 +20,35 @@ use crate::state;
 use bgrun_proto::LogLine;
 
 /// Shared sysinfo::System instance for resource monitoring.
-static SYSINFO_SYSTEM: once_cell::sync::Lazy<Arc<std::sync::Mutex<sysinfo::System>>> =
-    once_cell::sync::Lazy::new(|| Arc::new(std::sync::Mutex::new(sysinfo::System::new())));
+static SYSINFO_SYSTEM: LazyLock<Arc<std::sync::Mutex<sysinfo::System>>> =
+    LazyLock::new(|| Arc::new(std::sync::Mutex::new(sysinfo::System::new())));
 
 /// Global map of job IDs to their stdin handles (piped mode).
-pub static STDIN_HANDLES: once_cell::sync::Lazy<
+pub static STDIN_HANDLES: LazyLock<
     Mutex<HashMap<String, tokio::process::ChildStdin>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Global map of job IDs to their PTY master writers (for --pty mode).
 /// Wrapped in Arc<std::sync::Mutex> for thread-safe synchronous writes.
 type PtyWriter = Box<dyn std::io::Write + Send + 'static>;
-pub static PTY_WRITERS: once_cell::sync::Lazy<
+pub static PTY_WRITERS: LazyLock<
     Mutex<HashMap<String, Arc<std::sync::Mutex<PtyWriter>>>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Global map of job IDs to their PTY master handles (for resize operations).
-pub static PTY_PAIRS: once_cell::sync::Lazy<
+pub static PTY_PAIRS: LazyLock<
     Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Broadcast senders for raw PTY output to attached clients.
-pub static JOB_BROADCASTS: once_cell::sync::Lazy<
+pub static JOB_BROADCASTS: LazyLock<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<Vec<u8>>>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Broadcast senders for structured LogLine streams (used by StreamLogs).
-pub static LOG_BROADCASTS: once_cell::sync::Lazy<
+pub static LOG_BROADCASTS: LazyLock<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<bgrun_proto::LogLine>>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // Re-export for convenience — the static is defined in state.rs so the
 // library crate (orphan.rs) and binary crate (runner.rs) share one instance.
@@ -55,9 +56,9 @@ pub use crate::state::LIFECYCLE_NOTIFY;
 
 /// Per-job mutex that serializes concurrent stdout/stderr writes to the
 /// shared log file. Prevents interleaved NDJSON entries.
-pub static LOG_WRITE_LOCKS: once_cell::sync::Lazy<
+pub static LOG_WRITE_LOCKS: LazyLock<
     Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Binds to an ephemeral port to find a free one, then returns the port number.
 fn find_free_port() -> Result<u16> {
@@ -947,7 +948,7 @@ pub async fn get_stats(
     };
 
     let mut sys = SYSINFO_SYSTEM.lock().unwrap();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     let sysinfo_pid = sysinfo::Pid::from_u32(pid);
     let (cpu_pct, rss_mb, uptime_secs) = match sys.process(sysinfo_pid) {
@@ -965,7 +966,7 @@ pub async fn get_stats(
 /// Returns the RSS in KB for a given PID, or None if the process is gone.
 fn get_process_rss_kb(pid: u32) -> Option<u64> {
     let mut sys = SYSINFO_SYSTEM.lock().unwrap();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     sys.process(sysinfo::Pid::from_u32(pid))
         .map(|p| p.memory())
 }
@@ -1125,21 +1126,21 @@ async fn capture_output(
 /// device attributes, DCS sequences) from log lines while leaving standard color
 /// codes intact.
 fn scrub_terminal_noise(input: &str) -> String {
-    static OSC_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+    static OSC_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new("\x1b\\][0-9]+;[^\x1b\x07]*(?:\x1b\\\\|\x07)").unwrap()
     });
 
-    static DCS_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+    static DCS_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new("\x1bP[^\x1b]*\x1b\\\\").unwrap()
     });
 
-    static CSI_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+    static CSI_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new("\x1b\\[[\x3f\x3e]?[0-9;]*[Rcqu]").unwrap()
     });
 
     // Cursor movement and erase sequences used by progress bars and shell
     // rendering — always noise in log output.
-    static CURSOR_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+    static CURSOR_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new("\x1b\\[[?]?[0-9;]*[FEGKJ]|\x1b\\[[?]25[hl]").unwrap()
     });
 

@@ -3,12 +3,13 @@ pub use bgrun_proto::paths::{job_dir, socket_path, state_dir};
 use anyhow::{Context, Result};
 use bgrun_core::Job;
 use bgrun_proto::{JobRecord, JobStatus};
+use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 
 /// Notify trigger for the reactive auto-shutdown monitor.
 /// Called whenever a job spawns or exits.
-pub static LIFECYCLE_NOTIFY: once_cell::sync::Lazy<tokio::sync::Notify> =
-    once_cell::sync::Lazy::new(|| tokio::sync::Notify::new());
+pub static LIFECYCLE_NOTIFY: LazyLock<tokio::sync::Notify> =
+    LazyLock::new(|| tokio::sync::Notify::new());
 
 /// Writes durable metadata for a job.
 pub async fn write_meta(job: &Job) -> Result<()> {

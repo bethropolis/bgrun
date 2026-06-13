@@ -3,99 +3,81 @@
 [![CI](https://github.com/bethropolis/bgrun/actions/workflows/release.yml/badge.svg)](https://github.com/bethropolis/bgrun/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/github/license/bethropolis/bgrun)](LICENSE)
 
-A background process runner for AI agents and automation workflows. Start processes, check status, tail logs, and kill them over a Unix socket with JSON output. The daemon auto-starts on first CLI use.
+> **Run long-running background tasks easily. Perfect for development servers, test suites, and AI agent automation loops.**
+
+`bgrun` manages your background tasks so you can keep working without terminal lockups. Start servers, track their readiness, tail logs, and shut them down; all over an automatic background daemon using structured JSON payloads.
 
 ## Install
 
-### Quick install (Linux)
-
 ```bash
+# Quick install (Linux)
 curl -fsSL https://bethropolis.github.io/bgrun/install.sh | sh
-```
 
-Downloads the latest prebuilt binary from GitHub releases.
-
-### AUR (Arch Linux)
-
-```
+# AUR (Arch Linux)
 yay -S bgrun-bin
-```
 
-### Homebrew (Linux)
+# Homebrew (Linux)
+brew tap bethropolis/tap && brew install --cask bethropolis/tap/bgrun
 
-```bash
-brew tap bethropolis/tap
-brew install --cask bethropolis/tap/bgrun
-```
-
-### From source (Linux)
-
-```bash
-./install.sh
-```
-
-Requires the Rust toolchain (`cargo`). This builds from a local clone and installs
-`bgrun` (CLI) and `bgrun-daemon` (auto-started by the CLI) to `~/.local/bin`.
-
-Optional: install the OpenCode skill bundle from `docs/bgrun/`:
-
-```bash
-./install.sh --install-skill
+# From source
+./install.sh   # requires Rust toolchain
 ```
 
 ## Quick start
 
+### 1. Run a Process
+Launch a process in the background and tell `bgrun` exactly when it is ready to handle traffic:
 ```bash
-bgrun run --name server --ready-when "listening on" cargo run
-# → {"id":"abc123","name":"server","state":"running",...}
-
-bgrun wait abc123 --timeout 30s
-
-bgrun tail abc123 --digest
-# → {"total_lines":82,"errors":0,"warnings":2,...}
-
-bgrun kill abc123
+bgrun run --name dev-server --ready-when-port 3000 "npm run dev"
 ```
+
+### 3. Coordinate Your Workflow
+Block execution only until the server is actually ready, inspect its logs, or terminate it cleanly:
+```bash
+# Block until ready (not a must!)
+bgrun wait dev-server --timeout 30s
+
+# Check on-demand logs
+bgrun tail dev-server --lines 10
+
+# Clean up
+bgrun kill dev-server
+```
+
+---
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `bgrun run [flags] <cmd...>` | Start a background process |
-| `bgrun run-group <name> <name> ...` | Start multiple named jobs in parallel |
+| `bgrun run [flags] <cmd...>` | Start a background job |
 | `bgrun list [--workspace <ws>]` | List all jobs |
 | `bgrun status <id>` | Get job state |
-| `bgrun wait <id> --timeout <d>` | Block until ready or timeout |
+| `bgrun wait <id> --timeout <d>` | Block until ready |
 | `bgrun tail <id> [--digest] [--level <l>]` | Show logs |
-| `bgrun diff <id>` | Show new log lines since last call |
+| `bgrun diff <id>` | New log lines since last call |
 | `bgrun send <id> <data>` | Write to stdin |
 | `bgrun stats <id>` | Show CPU/RSS/uptime |
 | `bgrun kill <id> [--workspace <ws>]` | Terminate job(s) |
-| `bgrun attach <id>` | Attach to a PTY job interactively |
-| `bgrun expect <id> <pattern>` | Wait for a log line matching pattern |
-| `bgrun stats <id>` | Show CPU/RSS/uptime |
-| `bgrun schema <command>` | Print JSON Schema for a command's args |
-| `bgrun skill install <dir>` | Install embedded skill bundle |
-| `bgrun` (no args) | Open interactive TUI menu |
+| `bgrun attach <id>` | Attach to PTY job interactively |
+| `bgrun expect <id> <pattern>` | Wait for log line matching pattern |
+| `bgrun schema <command>` | Print JSON Schema for command args |
 
 ## Docs
 
-- [Command Reference](docs/commands.md) — flags, examples, output shapes
-- [bgrun.toml](docs/bgrun-toml.md) — named job definitions and dependencies
-- [Architecture](docs/architecture.md) — daemon, protocol, readiness system
+- [Command Reference](docs/commands.md)
+- [bgrun.toml](docs/bgrun-toml.md)
+- [Architecture](docs/architecture.md)
+- [OpenCode Skill](docs/bgrun/SKILL.md)
 
 ## Crate layout
-
-Workspace crates:
 
 | Crate | Role |
 |-------|------|
 | `bgrun-proto` | Shared types, no I/O |
-| `bgrun-core` | Job state machine, config parser, no I/O |
-| `bgrun-daemon` | Spawns/monitors/kills processes, serves the CLI |
+| `bgrun-core` | Job state machine, config parser |
+| `bgrun-daemon` | Spawns/monitors/kills processes, serves CLI |
 | `bgrun-cli` | User-facing CLI |
-
-CLI and daemon communicate over a Unix socket with NDJSON. The daemon stores state in `~/.local/share/bgrun/`.
 
 ## License
 

@@ -1019,7 +1019,7 @@ fn args_summary(cmd: &Command) -> String {
             (_, Some(ws)) => format!("workspace={}", ws),
             _ => "".into(),
         },
-        Command::Tail(TailArgs { id, lines, ref filter_regex, .. }) => {
+        Command::Tail(TailArgs { id, lines, filter_regex, .. }) => {
             let mut s = format!("id={} lines={}", id, lines);
             if filter_regex.is_some() {
                 s.push_str(" filter=regex");
@@ -1029,7 +1029,7 @@ fn args_summary(cmd: &Command) -> String {
         Command::Status { id } => format!("id={}", id),
         Command::List { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
         Command::Wait { id, .. } => format!("id={}", id),
-        Command::Diff { id, ref filter_regex, .. } => {
+        Command::Diff { id, filter_regex, .. } => {
             let mut s = format!("id={}", id);
             if filter_regex.is_some() {
                 s.push_str(" filter=regex");
