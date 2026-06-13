@@ -3,7 +3,7 @@ use bgrun_proto::Command;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
-use crate::duration::parse_duration_ms;
+use crate::duration::BgrunDuration;
 use crate::output::output_mode;
 
 /// Waits for a pattern in a job's log output.
@@ -11,7 +11,7 @@ pub async fn expect(id: String, pattern: String, is_regex: bool, timeout: String
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
-    let timeout_ms = parse_duration_ms(&timeout)?;
+    let timeout_ms = timeout.parse::<BgrunDuration>()?.0;
 
     let mut client = DaemonClient::connect(&socket_path).await?;
 

@@ -2,7 +2,7 @@ use std::process::Command;
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    println!("cargo:rerun-if-changed={}/../../.git/HEAD", manifest_dir);
+    println!("cargo:rerun-if-changed={manifest_dir}/../../.git/HEAD");
 
     let desc = Command::new("git")
         .args(["describe", "--tags", "--dirty", "--always"])
@@ -27,12 +27,12 @@ fn main() {
     let version = match (desc, hash) {
         (Some(d), Some(h)) if d.ends_with("-dirty") => {
             let base = d.strip_suffix("-dirty").unwrap_or(&d);
-            format!("{}+g{}", base, h)
+            format!("{base}+g{h}")
         }
         (Some(d), _) => d,
-        (None, Some(h)) => format!("g{}", h),
+        (None, Some(h)) => format!("g{h}"),
         (None, None) => return,
     };
 
-    println!("cargo:rustc-env=BGRUN_VERSION={}", version);
+    println!("cargo:rustc-env=BGRUN_VERSION={version}");
 }

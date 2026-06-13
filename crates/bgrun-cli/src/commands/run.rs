@@ -5,7 +5,7 @@ use bgrun_proto::{Command, JobRecord, ReadinessStrategy, RunArgs};
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
-use crate::duration::parse_duration_ms;
+use crate::duration::BgrunDuration;
 use crate::output::{output_mode, print_job};
 
 /// Optional flags for the run command.
@@ -97,7 +97,7 @@ pub async fn run(
     let restart = match flags.restart.as_deref() {
         Some("on-crash") => {
             let backoff_ms = match flags.backoff {
-                Some(ref b) => Some(parse_duration_ms(b)?),
+                Some(ref b) => Some(b.parse::<BgrunDuration>()?.0),
                 None => None,
             }.unwrap_or(2000);
             Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms })

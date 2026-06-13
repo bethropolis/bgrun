@@ -3,7 +3,7 @@ use bgrun_proto::{Command, WaitResult};
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
-use crate::duration::parse_duration_ms;
+use crate::duration::BgrunDuration;
 use crate::output::output_mode;
 
 /// Waits for a job to become ready or until timeout.
@@ -13,7 +13,7 @@ pub async fn wait(id: String, timeout: String, json: bool) -> Result<()> {
 
     let mut client = DaemonClient::connect(&socket_path).await?;
 
-    let timeout_ms = parse_duration_ms(&timeout)?;
+    let timeout_ms = timeout.parse::<BgrunDuration>()?.0;
 
     if output_mode(json) == crate::output::OutputMode::Human {
         eprintln!("Waiting for job {} (timeout: {})...", id, timeout);

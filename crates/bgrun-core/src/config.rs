@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bgrun_proto::{ReadinessStrategy, RestartPolicy, RunArgs};
 use serde::Deserialize;
+use thiserror::Error;
 
 /// Parsed representation of a bgrun.toml config file.
 #[derive(Deserialize, Debug, Clone)]
@@ -57,42 +58,31 @@ pub struct JobConfig {
 }
 
 /// Errors during config parsing or resolution.
-#[derive(Debug)]
-pub enum ConfigError {
-    /// The named job was not found in the config.
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("job '{0}' not found in config")]
     JobNotFound(String),
-    /// Failed to parse the TOML content.
+    #[error("config parse error: {0}")]
     ParseError(String),
 }
 
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::JobNotFound(name) => write!(f, "job '{}' not found in config", name),
-            ConfigError::ParseError(msg) => write!(f, "config parse error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
 /// Parses a bgrun.toml string into a BgrunToml struct (pure, no I/O).
-pub fn parse_config(content: &str) -> Result<BgrunToml, ConfigError> {
-    toml::from_str(content).map_err(|e| ConfigError::ParseError(e.to_string()))
+pub fn parse_config(content: &str) -> Result<BgrunToml, Error> {
+    toml::from_str(content).map_err(|e| Error::ParseError(e.to_string()))
 }
 
 /// Resolves a named job from the config into RunArgs.
-pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, ConfigError> {
+pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error> {
     let job = config
         .jobs
         .get(name)
-        .ok_or_else(|| ConfigError::JobNotFound(name.into()))?;
+        .ok_or_else(|| Error::JobNotFound(name.into()))?;
 
     // Parse cmd: array is used directly, single string goes through shlex
     let cmd: Vec<String> = match &job.cmd {
         TomlCmd::Array(arr) => arr.clone(),
         TomlCmd::Single(s) => {
-            shlex::split(s).ok_or_else(|| ConfigError::ParseError(format!(
+            shlex::split(s).ok_or_else(|| Error::ParseError(format!(
                 "failed to parse cmd string for job '{}': unmatched quotes or invalid syntax", name
             )))?
         }
@@ -214,7 +204,7 @@ workspace = "myproject"
     fn test_resolve_missing_job() {
         let config = parse_config(sample_toml()).unwrap();
         let err = resolve_job_args("nonexistent", &config).unwrap_err();
-        assert!(matches!(err, ConfigError::JobNotFound(_)));
+        assert!(matches!(err, Error::JobNotFound(_)));
     }
 
     #[test]
@@ -264,6 +254,6 @@ cmd = "echo 'hello world'"
     #[test]
     fn test_invalid_toml() {
         let err = parse_config("not valid toml {{{").unwrap_err();
-        assert!(matches!(err, ConfigError::ParseError(_)));
+        assert!(matches!(err, Error::ParseError(_)));
     }
 }

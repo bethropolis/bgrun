@@ -240,5 +240,5 @@ after = "db"
     assert!(args.readiness.is_none());
 
     let err = bgrun_core::config::resolve_job_args("nonexistent", &config).unwrap_err();
-    assert!(matches!(err, bgrun_core::ConfigError::JobNotFound(_)));
+    assert!(matches!(err, bgrun_core::config::Error::JobNotFound(_)));
 }

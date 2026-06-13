@@ -155,6 +155,11 @@ fn spawn_detached_daemon() -> Result<()> {
     std::fs::create_dir_all(state::state_dir()).context("failed to create state directory")?;
 
     let mut command = detached_command(&exe, &log_path)?;
+    // SAFETY: pre_exec (from std::os::unix::process::CommandExt) runs
+    // the closure after fork but before exec in the child process.
+    // The caller must ensure the closure only calls async-signal-safe
+    // functions. setsid(2) is async-signal-safe per POSIX, and the
+    // closure does not heap-allocate, hold locks, or panic.
     unsafe {
         command.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
