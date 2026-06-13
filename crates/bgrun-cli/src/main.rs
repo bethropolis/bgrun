@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
-use std::io::IsTerminal;
 use std::path::PathBuf;
 
 mod autostart;
@@ -11,12 +10,18 @@ pub mod output;
 #[derive(Parser)]
 #[command(
     name = "bgrun",
-    about = "Background process runner for AI agent workflows"
+    about = "Background process runner for AI agent workflows",
+    version = env!("CARGO_PKG_VERSION"),
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     /// Output in JSON format (default: human-readable)
     #[arg(long, global = true)]
     json: bool,
+
+    /// Launch interactive TUI menu
+    #[arg(short = 'i', long, global = true)]
+    interactive: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -416,10 +421,9 @@ async fn main() -> Result<()> {
             }
         },
         None => {
-            if std::io::stdout().is_terminal() {
+            if cli.interactive {
                 commands::interactive::start_menu().await?;
             } else {
-                // Non-interactive: show help
                 let mut cmd = Cli::command();
                 cmd.print_help()?;
                 println!();
