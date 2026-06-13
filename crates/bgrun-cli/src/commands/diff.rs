@@ -30,7 +30,8 @@ pub async fn diff(
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("diff: {err}");
     }
 
     if let Some(data) = response.data {

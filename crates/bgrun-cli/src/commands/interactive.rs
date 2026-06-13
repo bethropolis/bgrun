@@ -32,7 +32,7 @@ pub async fn start_menu() -> Result<()> {
             }
             Ok("Attach to Interactive PTY") => {
                 if let Some(id) = select_active_job().await? {
-                    let _ = crate::commands::attach::attach_job(id).await;
+                    let _ = crate::commands::attach::attach_job(id, false).await;
                 }
             }
             Ok("Tail Job Logs") => {

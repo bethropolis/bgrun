@@ -11,7 +11,7 @@ const ESCAPE_Q: u8 = 0x11;
 /// Attach to a PTY job's stdin/stdout interactively.
 ///
 /// Ctrl+P then Ctrl+Q detaches the client (the job continues running).
-pub async fn attach_job(id: String) -> Result<()> {
+pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
 
     // Ensure daemon is running

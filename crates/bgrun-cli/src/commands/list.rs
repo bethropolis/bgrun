@@ -17,7 +17,8 @@ pub async fn list(workspace: Option<String>, json: bool) -> Result<()> {
         .await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("list: {err}");
     }
 
     let records = response.data.unwrap_or_default();

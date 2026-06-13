@@ -15,7 +15,8 @@ pub async fn status(id: String, json: bool) -> Result<()> {
     let response = client.send::<JobStatus>(Command::Status { id }).await?;
 
     if !response.ok {
-        anyhow::bail!("{}", response.error.unwrap_or_default());
+        let err = response.error.unwrap_or_default();
+        anyhow::bail!("status: {err}");
     }
 
     if let Some(status) = response.data {

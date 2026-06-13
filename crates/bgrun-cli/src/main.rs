@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod autostart;
 mod client;
 pub mod commands;
+mod duration;
 pub mod output;
 
 #[derive(Parser)]
@@ -328,9 +329,10 @@ async fn main() -> Result<()> {
             health_interval,
             health_threshold,
         }) => {
-            let max_runtime_ms = max_runtime
-                .as_ref()
-                .and_then(|s| commands::run::parse_duration_ms(s));
+            let max_runtime_ms = match max_runtime {
+                Some(ref s) => Some(duration::parse_duration_ms(s)?),
+                None => None,
+            };
             let flags = commands::run::RunFlags {
                 ready_when,
                 ready_when_regex,
@@ -396,7 +398,7 @@ async fn main() -> Result<()> {
             commands::stats::stats(id, json).await?;
         }
         Some(Commands::Attach { id }) => {
-            commands::attach::attach_job(id).await?;
+            commands::attach::attach_job(id, json).await?;
         }
         Some(Commands::Expect {
             id,
