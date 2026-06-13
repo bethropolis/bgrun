@@ -4,30 +4,12 @@ bgrun is split into 4 crates with a strict dependency graph. The daemon and CLI 
 
 ## Crate layout
 
-```
-┌──────────────┐
-│  bgrun-proto │   Pure types: Command, Response, JobRecord, paths
-└──────┬───────┘
-       │
-┌──────▼───────┐
-│  bgrun-core  │   Pure logic: Job state machine, JobStore, bgrun.toml parser
-└──┬──────┬────┘
-   │      │
-   │  ┌───▼──────────┐
-   │  │  bgrun-cli    │   CLI binary (no daemon dependency)
-   │  │  (Unix socket)│
-   │  └───────────────┘
-   │
-┌──▼─────────────┐
-│  bgrun-daemon   │   Daemon binary
-│  (Unix socket)  │
-└─────────────────┘
-```
+![bgrun Architecture Diagram](architecture.svg)
 
 - **`bgrun-proto`** — zero I/O. Types only. Any crate can depend on it.
 - **`bgrun-core`** — zero I/O. Pure logic and data structures. Depends only on `bgrun-proto`.
-- **`bgrun-daemon`** — depends on `bgrun-proto` + `bgrun-core`. Full daemon with tokio, nix, tracing.
 - **`bgrun-cli`** — depends on `bgrun-proto` + `bgrun-core`. Talks to daemon over Unix socket.
+- **`bgrun-daemon`** — depends on `bgrun-proto` + `bgrun-core`. Full daemon with tokio, nix, tracing.
 
 The CLI never imports `bgrun-daemon`. Path utilities (`socket_path`, `state_dir`) are in `bgrun-proto::paths` so both crates share them without coupling.
 

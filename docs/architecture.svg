@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="100%" height="100%">
+  <!-- SVG CSS Styling with Soft Muted Colors -->
+  <style>
+    .title { font-family: system-ui, -apple-system, sans-serif; font-weight: 700; fill: #f1f5f9; font-size: 20px; }
+    .sub-title { font-family: system-ui, -apple-system, sans-serif; font-weight: 400; fill: #64748b; font-size: 13px; }
+    .box-title { font-family: system-ui, -apple-system, sans-serif; font-weight: 600; fill: #f8fafc; font-size: 16px; }
+    .box-desc { font-family: system-ui, -apple-system, sans-serif; font-size: 11px; fill: #94a3b8; }
+    .arrow { stroke: #475569; stroke-width: 1.5; fill: none; }
+    .arrow-glow { stroke: #52718f; stroke-width: 1.5; fill: none; stroke-dasharray: 4; }
+    .socket-text { font-family: system-ui, -apple-system, sans-serif; font-size: 11px; font-weight: 600; fill: #6482a2; text-anchor: middle; }
+  </style>
+  
+  <!-- Definitions for Muted Gradients and Markers -->
+  <defs>
+    <!-- Muted Card Background -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0e1117" />
+      <stop offset="100%" stop-color="#121620" />
+    </linearGradient>
+    
+    <!-- Muted Node Gradients -->
+    <!-- Steel Blue -->
+    <linearGradient id="protoGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2a3e51" />
+      <stop offset="100%" stop-color="#1c2d3d" />
+    </linearGradient>
+    <!-- Sage Green -->
+    <linearGradient id="coreGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#223a31" />
+      <stop offset="100%" stop-color="#162b24" />
+    </linearGradient>
+    <!-- Dusty Lavender/Purple -->
+    <linearGradient id="cliGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#332d4b" />
+      <stop offset="100%" stop-color="#221e35" />
+    </linearGradient>
+    <!-- Muted Copper/Rose -->
+    <linearGradient id="daemonGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#452c34" />
+      <stop offset="100%" stop-color="#2e1d23" />
+    </linearGradient>
+    
+    <!-- Softer Socket glow filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
+    <!-- Muted Arrowhead Markers -->
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569" />
+    </marker>
+    <marker id="sockethead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#52718f" />
+    </marker>
+  </defs>
+
+  <!-- Background Base Card -->
+  <rect width="100%" height="100%" rx="16" fill="url(#bgGrad)" stroke="#1e2230" stroke-width="1.5" />
+  
+  <!-- Header Text -->
+  <text x="40" y="50" class="title">bgrun Crate Dependency Graph</text>
+  <text x="40" y="70" class="sub-title">Strict POSIX compliance and clean architectural boundaries</text>
+
+  <!-- Connection Paths -->
+  <!-- Proto -> Core -->
+  <path d="M 400, 190 L 400, 240" class="arrow" marker-end="url(#arrowhead)" />
+  
+  <!-- Core -> CLI (Split Left) -->
+  <path d="M 400, 340 L 400, 360 L 210, 360 L 210, 400" class="arrow" marker-end="url(#arrowhead)" />
+  
+  <!-- Core -> Daemon (Split Right) -->
+  <path d="M 400, 340 L 400, 360 L 590, 360 L 590, 400" class="arrow" marker-end="url(#arrowhead)" />
+  
+  <!-- Socket Communication Bridge (CLI <-> Daemon) -->
+  <path d="M 320, 455 L 480, 455" stroke="#52718f" stroke-width="6" opacity="0.08" filter="url(#glow)" />
+  <path d="M 325, 455 L 475, 455" class="arrow-glow" marker-end="url(#sockethead)" marker-start="url(#sockethead)" />
+  <text x="400" y="445" class="socket-text">Unix Domain Socket (NDJSON)</text>
+
+  <!-- Nodes -->
+  <!-- 1. bgrun-proto -->
+  <g transform="translate(300, 100)">
+    <rect width="200" height="90" rx="12" fill="url(#protoGrad)" opacity="0.95" />
+    <rect width="200" height="90" rx="12" fill="none" stroke="#4f6d84" stroke-width="1.2" />
+    <text x="100" y="30" text-anchor="middle" class="box-title">bgrun-proto</text>
+    <line x1="20" y1="42" x2="180" y2="42" stroke="#ffffff" opacity="0.1" />
+    <text x="100" y="58" text-anchor="middle" class="box-desc">Pure Types: Command &amp; Response</text>
+    <text x="100" y="73" text-anchor="middle" class="box-desc">Zero I/O • Shared Path Resolvers</text>
+  </g>
+
+  <!-- 2. bgrun-core -->
+  <g transform="translate(300, 250)">
+    <rect width="200" height="90" rx="12" fill="url(#coreGrad)" opacity="0.95" />
+    <rect width="200" height="90" rx="12" fill="none" stroke="#3b5e4f" stroke-width="1.2" />
+    <text x="100" y="30" text-anchor="middle" class="box-title">bgrun-core</text>
+    <line x1="20" y1="42" x2="180" y2="42" stroke="#ffffff" opacity="0.1" />
+    <text x="100" y="58" text-anchor="middle" class="box-desc">Pure Logic: Job State Machine</text>
+    <text x="100" y="73" text-anchor="middle" class="box-desc">JobStore • TOML Config Parser</text>
+  </g>
+
+  <!-- 3. bgrun-cli -->
+  <g transform="translate(100, 410)">
+    <rect width="220" height="110" rx="12" fill="url(#cliGrad)" opacity="0.95" />
+    <rect width="220" height="110" rx="12" fill="none" stroke="#524c6e" stroke-width="1.2" />
+    <text x="110" y="32" text-anchor="middle" class="box-title">bgrun-cli</text>
+    <line x1="20" y1="45" x2="200" y2="45" stroke="#ffffff" opacity="0.1" />
+    <text x="110" y="62" text-anchor="middle" class="box-desc">User-Facing Binary CLI</text>
+    <text x="110" y="78" text-anchor="middle" class="box-desc">No Daemon Linkage</text>
+    <text x="110" y="94" text-anchor="middle" class="box-desc">Interactive TUI Menu fallbacks</text>
+  </g>
+
+  <!-- 4. bgrun-daemon -->
+  <g transform="translate(480, 410)">
+    <rect width="220" height="110" rx="12" fill="url(#daemonGrad)" opacity="0.95" />
+    <rect width="220" height="110" rx="12" fill="none" stroke="#6e4d55" stroke-width="1.2" />
+    <text x="110" y="32" text-anchor="middle" class="box-title">bgrun-daemon</text>
+    <line x1="20" y1="45" x2="200" y2="45" stroke="#ffffff" opacity="0.1" />
+    <text x="110" y="62" text-anchor="middle" class="box-desc">Persistent Daemon Process</text>
+    <text x="110" y="78" text-anchor="middle" class="box-desc">Process Monitor &amp; PTY Multiplexer</text>
+    <text x="110" y="94" text-anchor="middle" class="box-desc">Durable State Manager</text>
+  </g>
+</svg>

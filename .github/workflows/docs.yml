@@ -41,6 +41,7 @@ jobs:
           mkdir -p docs/book-src
           sed 's|(docs/|(|g' README.md > docs/book-src/index.md
           cp docs/architecture.md docs/book-src/architecture.md
+          cp docs/architecture.svg docs/book-src/architecture.svg
           cp docs/bgrun-toml.md docs/book-src/bgrun-toml.md
           cp docs/commands.md docs/book-src/commands.md
           cat << 'EOF' > docs/book-src/SUMMARY.md
