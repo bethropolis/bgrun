@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -59,6 +59,14 @@ pub use crate::state::LIFECYCLE_NOTIFY;
 pub static LOG_WRITE_LOCKS: LazyLock<
     Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// In-memory ring buffers for recent PTY/piped output (used by `bgrun screen`).
+/// Each buffer stores up to 64KB of raw text output per job.
+pub static SCREEN_BUFFERS: LazyLock<
+    tokio::sync::Mutex<HashMap<String, VecDeque<u8>>>,
+> = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+const SCREEN_BUFFER_MAX: usize = 64 * 1024;
 
 /// Binds to an ephemeral port to find a free one, then returns the port number.
 fn find_free_port() -> Result<u16> {
@@ -190,6 +198,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     }
 
     // Create Job record
+    let job_name = args.name.clone();
     let mut job = Job::new(id.clone(), cmd.clone(), args.name, args.workspace);
     job.pid = Some(pid);
     job.state = JobState::Running;
@@ -205,10 +214,18 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     state::write_meta(&job).await?;
     state::write_status(&job).await?;
 
-    // Insert into store
+    // Insert into store (with re-check to prevent dual-spawn race)
     let record = job.to_record();
     {
         let mut store = store.lock().await;
+        if let Some(ref name) = job_name {
+            if let Some(existing) = store.find_by_name(name) {
+                if existing.is_alive() && existing.id != id {
+                    info!(name = %name, id = %existing.id, "dual-spawn race: returning existing");
+                    return Ok(existing.to_record());
+                }
+            }
+        }
         store.insert(job);
     }
 
@@ -356,6 +373,7 @@ async fn handle_job_exit(
     JOB_BROADCASTS.lock().await.remove(&id);
     LOG_BROADCASTS.lock().await.remove(&id);
     LOG_WRITE_LOCKS.lock().await.remove(&id);
+    SCREEN_BUFFERS.lock().await.remove(&id);
 
     // Persist status
     let job = {
@@ -491,9 +509,20 @@ async fn restart_job(id: String, store: Arc<Mutex<JobStore>>) {
         health_threshold: job.health_threshold,
     };
 
-    // Remove the old crashed record from both store and disk so named
-    // jobs never accumulate stale entries.
-    store.lock().await.remove(&id);
+    // Remove the old crashed record under lock (with re-check to avoid
+    // deleting a freshly-spawned job with the same name).
+    {
+        let mut store = store.lock().await;
+        if let Some(ref name) = job.name {
+            if let Some(existing) = store.find_by_name(name) {
+                if existing.is_alive() && existing.id != id {
+                    info!(name = %name, "restart race: job already alive with different UUID");
+                    return;
+                }
+            }
+        }
+        store.remove(&id);
+    }
     let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
 
     info!(id = %id, "restarting crashed job");
@@ -664,6 +693,7 @@ async fn spawn_pty_job(
     });
 
     // Create Job record
+    let job_name = args.name.clone();
     let mut job = Job::new(id.clone(), cmd.clone(), args.name, args.workspace);
     job.pid = Some(pid);
     job.state = JobState::Running;
@@ -679,10 +709,18 @@ async fn spawn_pty_job(
     state::write_meta(&job).await?;
     state::write_status(&job).await?;
 
-    // Insert into store
+    // Insert into store (with re-check to prevent dual-spawn race)
     let record = job.to_record();
     {
         let mut store = store.lock().await;
+        if let Some(ref name) = job_name {
+            if let Some(existing) = store.find_by_name(name) {
+                if existing.is_alive() && existing.id != id {
+                    info!(name = %name, id = %existing.id, "dual-spawn race: returning existing");
+                    return Ok(existing.to_record());
+                }
+            }
+        }
         store.insert(job);
     }
 
@@ -1190,12 +1228,25 @@ async fn write_ts_line(
     // Broadcast the line for StreamLogs subscribers
     let log_line = LogLine {
         line_number: 0,
-        content: content_for_broadcast,
+        content: content_for_broadcast.clone(),
         timestamp: Some(entry.t.clone()),
     };
     let broadcasts = LOG_BROADCASTS.lock().await;
     if let Some(tx) = broadcasts.get(id) {
         let _ = tx.send(log_line);
+    }
+
+    // Push to in-memory screen buffer (last 64KB)
+    {
+        let mut buffers = SCREEN_BUFFERS.lock().await;
+        let buf = buffers.entry(id.to_string()).or_default();
+        let line_bytes = content_for_broadcast.as_bytes();
+        buf.extend(line_bytes);
+        buf.push_back(b'\n');
+        while buf.len() > SCREEN_BUFFER_MAX {
+            let drain_to = buf.len().saturating_sub(SCREEN_BUFFER_MAX);
+            buf.drain(..drain_to);
+        }
     }
 }
 
@@ -1226,7 +1277,7 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     // Broadcast the line for StreamLogs subscribers
     let log_line = LogLine {
         line_number: 0,
-        content: content_for_broadcast,
+        content: content_for_broadcast.clone(),
         timestamp: Some(entry.t.clone()),
     };
     let rt = tokio::runtime::Handle::current();
@@ -1236,6 +1287,19 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
             let _ = tx.send(log_line);
         }
     });
+
+    // Push to in-memory screen buffer (last 64KB)
+    {
+        let mut buffers = SCREEN_BUFFERS.blocking_lock();
+        let buf = buffers.entry(id.to_string()).or_default();
+        let line_bytes = content_for_broadcast.as_bytes();
+        buf.extend(line_bytes);
+        buf.push_back(b'\n');
+        while buf.len() > SCREEN_BUFFER_MAX {
+            let drain_to = buf.len().saturating_sub(SCREEN_BUFFER_MAX);
+            buf.drain(..drain_to);
+        }
+    }
 }
 
 /// Captures output from a PTY master reader (sync, called from spawn_blocking).

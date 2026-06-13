@@ -235,11 +235,15 @@ enum Commands {
         id: String,
 
         /// Data to send
-        data: String,
+        data: Option<String>,
 
         /// Append a newline to the data
         #[arg(long)]
         newline: bool,
+
+        /// Send just an Enter (newline) without data
+        #[arg(long)]
+        enter: bool,
     },
 
     /// Show resource stats for a running job
@@ -295,6 +299,16 @@ enum Commands {
         /// Generate and print the CLI man page (troff format)
         #[arg(long)]
         man: bool,
+    },
+
+    /// Show the last N lines from a job's in-memory screen buffer (non-blocking)
+    Screen {
+        /// Job ID or name
+        id: String,
+
+        /// Number of lines to show [default: 20]
+        #[arg(long, default_value_t = 20)]
+        lines: usize,
     },
 
     /// Remove all terminated (crashed/exited/killed) jobs
@@ -426,8 +440,14 @@ async fn main() -> Result<()> {
         Some(Commands::RunGroup { names }) => {
             commands::run_group::run_group(names, json).await?;
         }
-        Some(Commands::Send { id, data, newline }) => {
-            let data = if newline { format!("{data}\n") } else { data };
+        Some(Commands::Send { id, data, newline, enter }) => {
+            let data = if enter {
+                format!("{}\n", data.unwrap_or_default())
+            } else if newline {
+                format!("{}\n", data.unwrap_or_default())
+            } else {
+                data.unwrap_or_default()
+            };
             commands::send::send(id, data, json).await?;
         }
         Some(Commands::Stats { id }) => {
@@ -449,6 +469,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Completions { active_ids, workspaces, shell, man }) => {
             commands::completions::completions(active_ids, workspaces, shell, man).await?;
+        }
+        Some(Commands::Screen { id, lines }) => {
+            commands::screen::screen(id, lines, json).await?;
         }
         Some(Commands::Clean { workspace, force }) => {
             commands::clean::clean(workspace, json, force).await?;
