@@ -39,7 +39,7 @@ jobs:
       - name: Prepare Book Source
         run: |
           mkdir -p docs/book-src
-          cp README.md docs/book-src/index.md
+          sed 's|(docs/|(|g' README.md > docs/book-src/index.md
           cp docs/architecture.md docs/book-src/architecture.md
           cp docs/bgrun-toml.md docs/book-src/bgrun-toml.md
           cp docs/commands.md docs/book-src/commands.md
