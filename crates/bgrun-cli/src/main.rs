@@ -12,7 +12,7 @@ pub mod output;
 #[command(
     name = "bgrun",
     about = "Background process runner for AI agent workflows",
-    version = env!("CARGO_PKG_VERSION"),
+    version = option_env!("BGRUN_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
     args_conflicts_with_subcommands = true
 )]
 struct Cli {
@@ -126,14 +126,22 @@ enum Commands {
 
     /// Get status of a job
     Status {
-        /// Job ID
-        id: String,
+        /// Job ID or name
+        id: Option<String>,
+
+        /// Alternative to positional ID
+        #[arg(short = 'n', long)]
+        name: Option<String>,
     },
 
     /// Kill a job
     Kill {
-        /// Job ID
+        /// Job ID or name
         id: Option<String>,
+
+        /// Alternative to positional ID
+        #[arg(short = 'n', long)]
+        name: Option<String>,
 
         /// Kill all jobs in a workspace
         #[arg(long)]
@@ -152,8 +160,12 @@ enum Commands {
 
     /// Show the last N lines of a job's log
     Tail {
-        /// Job ID
-        id: String,
+        /// Job ID or name
+        id: Option<String>,
+
+        /// Alternative to positional ID
+        #[arg(short = 'n', long)]
+        name: Option<String>,
 
         /// Number of lines to show
         #[arg(long, default_value_t = 20)]
@@ -175,7 +187,7 @@ enum Commands {
         #[arg(long)]
         strip_ansi: bool,
 
-        /// Follow new log lines in real time (polls every 200ms)
+        /// Follow new log lines in real time
         #[arg(long)]
         follow: bool,
 
@@ -186,8 +198,12 @@ enum Commands {
 
     /// Show log lines since the last diff call
     Diff {
-        /// Job ID
-        id: String,
+        /// Job ID or name
+        id: Option<String>,
+
+        /// Alternative to positional ID
+        #[arg(short = 'n', long)]
+        name: Option<String>,
 
         /// Number of lines to show (unlimited if not set)
         #[arg(long)]
@@ -215,11 +231,15 @@ enum Commands {
 
     /// Send data to a job's stdin
     Send {
-        /// Job ID
+        /// Job ID or name
         id: String,
 
         /// Data to send
         data: String,
+
+        /// Append a newline to the data
+        #[arg(long)]
+        newline: bool,
     },
 
     /// Show resource stats for a running job
@@ -282,6 +302,10 @@ enum Commands {
         /// Only clean jobs in this workspace
         #[arg(long)]
         workspace: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'f', long)]
+        force: bool,
     },
 
     /// Manage embedded skills
@@ -358,10 +382,17 @@ async fn main() -> Result<()> {
         Some(Commands::List { workspace }) => {
             commands::list::list(workspace, json).await?;
         }
-        Some(Commands::Status { id }) => {
+        Some(Commands::Status { id, name }) => {
+            let id = resolve_id_or_name(id, name, "status")?;
             commands::status::status(id, json).await?;
         }
-        Some(Commands::Kill { id, workspace }) => {
+        Some(Commands::Kill { id, name, workspace }) => {
+            let id = match (id, name) {
+                (Some(_), Some(_)) => anyhow::bail!("kill: specify either a positional ID or --name, not both"),
+                (Some(id), None) => Some(id),
+                (None, Some(name)) => Some(name),
+                (None, None) => None,
+            };
             commands::kill::kill(id, workspace, json).await?;
         }
         Some(Commands::Wait { id, timeout }) => {
@@ -369,6 +400,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Tail {
             id,
+            name,
             lines,
             digest,
             level,
@@ -377,21 +409,25 @@ async fn main() -> Result<()> {
             follow,
             filter_regex,
         }) => {
+            let id = resolve_id_or_name(id, name, "tail")?;
             commands::tail::tail(id, lines, digest, level, stream, strip_ansi, follow, filter_regex, json).await?;
         }
         Some(Commands::Diff {
             id,
+            name,
             lines,
             stream,
             strip_ansi,
             filter_regex,
         }) => {
+            let id = resolve_id_or_name(id, name, "diff")?;
             commands::diff::diff(id, lines, stream, strip_ansi, filter_regex, json).await?;
         }
         Some(Commands::RunGroup { names }) => {
             commands::run_group::run_group(names, json).await?;
         }
-        Some(Commands::Send { id, data }) => {
+        Some(Commands::Send { id, data, newline }) => {
+            let data = if newline { format!("{data}\n") } else { data };
             commands::send::send(id, data, json).await?;
         }
         Some(Commands::Stats { id }) => {
@@ -414,8 +450,8 @@ async fn main() -> Result<()> {
         Some(Commands::Completions { active_ids, workspaces, shell, man }) => {
             commands::completions::completions(active_ids, workspaces, shell, man).await?;
         }
-        Some(Commands::Clean { workspace }) => {
-            commands::clean::clean(workspace, json).await?;
+        Some(Commands::Clean { workspace, force }) => {
+            commands::clean::clean(workspace, json, force).await?;
         }
         Some(Commands::Skill { command }) => match command {
             SkillCommands::Install { path } => {
@@ -434,4 +470,13 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_id_or_name(id: Option<String>, name: Option<String>, cmd: &str) -> Result<String> {
+    match (id, name) {
+        (Some(_), Some(_)) => anyhow::bail!("{cmd}: specify either a positional ID or --name, not both"),
+        (Some(id), None) => Ok(id),
+        (None, Some(name)) => Ok(name),
+        (None, None) => anyhow::bail!("{cmd}: a job ID or --name is required"),
+    }
 }
