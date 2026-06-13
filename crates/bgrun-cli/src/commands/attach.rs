@@ -69,6 +69,21 @@ async fn run_attach_loop(
     mut stream_read: tokio::io::ReadHalf<UnixStream>,
     mut stream_write: tokio::io::WriteHalf<UnixStream>,
 ) -> Result<()> {
+    let socket_path = bgrun_proto::paths::socket_path();
+
+    // Synchronize PTY size on initial attach
+    if let Ok((cols, rows)) = crossterm::terminal::size() {
+        if let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await {
+            let _ = client
+                .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
+                    id: id.clone(),
+                    cols,
+                    rows,
+                })
+                .await;
+        }
+    }
+
     // Spawn task to forward socket output → stdout
     let stdout_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
@@ -88,13 +103,13 @@ async fn run_attach_loop(
 
     // Spawn background task to monitor terminal window resizing
     let id_clone = id.clone();
+    let socket_path_clone = socket_path.clone();
     let resize_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         let mut reader = EventStream::new();
-        let socket_path = bgrun_proto::paths::socket_path();
 
         while let Some(Ok(event)) = reader.next().await {
             if let Event::Resize(cols, rows) = event {
-                if let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await {
+                if let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path_clone).await {
                     let _ = client
                         .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
                             id: id_clone.clone(),
