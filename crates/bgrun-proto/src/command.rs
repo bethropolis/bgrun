@@ -102,6 +102,8 @@ pub enum Command {
     Clean { workspace: Option<String> },
     /// Stream log lines in real time (connection-hijacking, like Attach).
     StreamLogs { id: String },
+    /// Read the last N lines from the in-memory screen buffer (non-blocking).
+    Screen { id: String, lines: usize },
 }
 
 /// A request sent from CLI to daemon.

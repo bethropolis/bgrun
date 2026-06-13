@@ -174,37 +174,22 @@ async fn handle_attach(
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
-    // Resolve name to UUID if needed
+    // Resolve name to UUID and verify job is alive+PTY under single lock
     let job_id = {
         let store_ref = store.lock().await;
-        store_ref.resolve_id(&id)
-    };
-    let job_id = match job_id {
-        Some(jid) => jid,
-        None => {
-            let (_reader, mut writer) = stream.into_split();
-            let err = Response::<()>::err("attach".into(), "job not found, not alive, or not a PTY job");
-            let json = serde_json::to_string(&err).unwrap_or_default();
-            let _ = writer.write_all(json.as_bytes()).await;
-            let _ = writer.write_all(b"\n").await;
-            return Ok(());
+        let jid = store_ref.resolve_id(&id);
+        match jid {
+            Some(jid) if store_ref.get(&jid).is_some_and(|job| job.is_alive() && job.pty) => jid,
+            _ => {
+                let (_reader, mut writer) = stream.into_split();
+                let err = Response::<()>::err("attach".into(), "job not found, not alive, or not a PTY job");
+                let json = serde_json::to_string(&err).unwrap_or_default();
+                let _ = writer.write_all(json.as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
+                return Ok(());
+            }
         }
     };
-
-    // Verify job exists, is alive, and has a PTY
-    let is_pty = {
-        let store_ref = store.lock().await;
-        matches!(store_ref.get(&job_id), Some(job) if job.is_alive() && job.pty)
-    };
-
-    if !is_pty {
-        let (_reader, mut writer) = stream.into_split();
-        let err = Response::<()>::err("attach".into(), "job not found, not alive, or not a PTY job");
-        let json = serde_json::to_string(&err).unwrap_or_default();
-        let _ = writer.write_all(json.as_bytes()).await;
-        let _ = writer.write_all(b"\n").await;
-        return Ok(());
-    }
 
     // Split the stream for bidirectional piping
     let (mut stream_read, mut stream_write) = stream.into_split();
@@ -318,29 +303,13 @@ async fn handle_stream_logs(
     use bgrun_proto::LogLine;
     use tokio::io::AsyncWriteExt;
 
-    // Resolve name to UUID if needed
+    // Resolve name to UUID and verify job exists under single lock
     let job_id = {
         let store_ref = store.lock().await;
-        store_ref.resolve_id(&id)
-    };
-    let job_id = match job_id {
-        Some(jid) => jid,
-        None => {
-            let (_reader, mut writer) = stream.into_split();
-            let err = Response::<()>::err("stream".into(), "job not found");
-            let json = serde_json::to_string(&err).unwrap_or_default();
-            let _ = writer.write_all(json.as_bytes()).await;
-            let _ = writer.write_all(b"\n").await;
-            return Ok(());
-        }
-    };
-
-    // Verify job exists
-    {
-        let store_ref = store.lock().await;
-        match store_ref.get(&job_id) {
-            Some(_) => {}
-            None => {
+        let jid = store_ref.resolve_id(&id);
+        match jid {
+            Some(jid) if store_ref.get(&jid).is_some() => jid,
+            _ => {
                 let (_reader, mut writer) = stream.into_split();
                 let err = Response::<()>::err("stream".into(), "job not found");
                 let json = serde_json::to_string(&err).unwrap_or_default();
@@ -349,7 +318,7 @@ async fn handle_stream_logs(
                 return Ok(());
             }
         }
-    }
+    };
 
     // Read existing lines from disk
     let log_path = crate::state::job_dir(&job_id).join("stdout.log");
@@ -548,26 +517,16 @@ async fn dispatch(
             let mut exit_code = None;
             let mut state = None;
 
-            // Resolve name to UUID first
-            let resolved_id = {
-                let store_ref = store.lock().await;
-                store_ref.resolve_id(&id)
-            };
-            let resolved_id = match resolved_id {
-                Some(jid) => jid,
-                None => {
-                    let err = Response::<()>::err(req_id, "job not found".to_string());
-                    return serde_json::to_value(err).unwrap_or_default();
-                }
-            };
-
+            // Resolve name to UUID inside the loop so that if the name is
+            // reassigned to a new UUID (e.g. after a restart) we pick it up.
             loop {
                 if start.elapsed() >= timeout {
                     break;
                 }
                 {
                     let store_ref = store.lock().await;
-                    match store_ref.get(&resolved_id) {
+                    let resolved_id = store_ref.resolve_id(&id);
+                    match resolved_id.and_then(|jid| store_ref.get(&jid)) {
                         Some(job) if job.state == bgrun_proto::JobState::Ready
                             || job.ready_at.is_some() =>
                         {
@@ -621,14 +580,14 @@ async fn dispatch(
             follow,
             filter_regex,
         }) => {
-            // Resolve name to UUID
+            // Resolve name to UUID under lock and verify job exists
             let job_id = {
                 let store_ref = store.lock().await;
-                store_ref.resolve_id(&id)
-            };
-            let job_id = match job_id {
-                Some(jid) => jid,
-                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                let jid = store_ref.resolve_id(&id);
+                match jid {
+                    Some(ref jid) if store_ref.get(jid).is_some() => jid.clone(),
+                    _ => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                }
             };
             let stream_deref = stream.as_deref();
             let level_deref = level.as_deref();
@@ -636,12 +595,38 @@ async fn dispatch(
             let regex_deref = regex_ref.as_ref();
             if digest {
                 match bgrun_daemon::log_manager::tail_digest(&job_id).await {
-                    Ok(digest) => match serde_json::to_value(digest) {
-                        Ok(val) => Response::ok(req_id.clone(), val),
-                        Err(e) => {
-                            Response::err(req_id.clone(), format!("serialization error: {}", e))
+                    Ok(digest) => {
+                        // If --lines is also specified, include the last N lines
+                        if lines > 0 {
+                            match bgrun_daemon::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
+                                Ok(mut log_lines) => {
+                                    if strip_ansi {
+                                        for line in &mut log_lines {
+                                            let clean = strip_ansi_escapes::strip(line.content.as_bytes());
+                                            line.content = String::from_utf8_lossy(&clean).into_owned();
+                                        }
+                                    }
+                                    let combined = serde_json::json!({
+                                        "digest": digest,
+                                        "lines": log_lines,
+                                    });
+                                    match serde_json::to_value(combined) {
+                                        Ok(val) => Response::ok(req_id.clone(), val),
+                                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                                    }
+                                }
+                                Err(_) => match serde_json::to_value(digest) {
+                                    Ok(val) => Response::ok(req_id.clone(), val),
+                                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                                },
+                            }
+                        } else {
+                            match serde_json::to_value(digest) {
+                                Ok(val) => Response::ok(req_id.clone(), val),
+                                Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                            }
                         }
-                    },
+                    }
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
             } else if let Some(cursor) = cursor_opt {
@@ -705,19 +690,14 @@ async fn dispatch(
             stream,
             filter_regex,
         } => {
-            // Resolve name to UUID
-            let job_id = {
+            // Resolve name to UUID under lock and read cursor atomically
+            let (job_id, cursor) = {
                 let store_ref = store.lock().await;
-                store_ref.resolve_id(&id)
-            };
-            let job_id = match job_id {
-                Some(jid) => jid,
-                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
-            };
-            // Read current cursor from store
-            let cursor = {
-                let store_ref = store.lock().await;
-                store_ref.get(&job_id).map_or(0, |job| job.last_diff_cursor)
+                let jid = store_ref.resolve_id(&id);
+                match jid {
+                    Some(jid) => (jid.clone(), store_ref.get(&jid).map_or(0, |job| job.last_diff_cursor)),
+                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                }
             };
             let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
             match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream.as_deref(), None, regex_ref.as_ref()).await {
@@ -793,34 +773,28 @@ async fn dispatch(
             let start = tokio::time::Instant::now();
             let timeout = std::time::Duration::from_millis(timeout_ms);
 
-            // Resolve name to UUID
+            // Resolve name to UUID and verify job is alive under single lock
             let job_id = {
                 let store_ref = store.lock().await;
-                store_ref.resolve_id(&id)
-            };
-            let job_id = match job_id {
-                Some(jid) => jid,
-                None => {
-                    let err = Response::<()>::err(req_id.clone(), "job not found");
-                    return serde_json::to_value(err).unwrap_or_default();
-                }
-            };
-
-            // Verify job exists and is alive
-            {
-                let store_ref = store.lock().await;
-                match store_ref.get(&job_id) {
-                    Some(job) if job.is_alive() => {}
-                    Some(_) => {
-                        let err = Response::<()>::err(req_id.clone(), "job is not alive");
-                        return serde_json::to_value(err).unwrap_or_default();
-                    }
+                let jid = store_ref.resolve_id(&id);
+                match jid {
+                    Some(jid) => match store_ref.get(&jid) {
+                        Some(job) if job.is_alive() => jid,
+                        Some(_) => {
+                            let err = Response::<()>::err(req_id.clone(), "job is not alive");
+                            return serde_json::to_value(err).unwrap_or_default();
+                        }
+                        None => {
+                            let err = Response::<()>::err(req_id.clone(), "job not found");
+                            return serde_json::to_value(err).unwrap_or_default();
+                        }
+                    },
                     None => {
                         let err = Response::<()>::err(req_id.clone(), "job not found");
                         return serde_json::to_value(err).unwrap_or_default();
                     }
                 }
-            }
+            };
 
             let log_path = bgrun_daemon::state::job_dir(&job_id).join("stdout.log");
             let mut cursor = get_file_size(&log_path).await;
@@ -909,14 +883,14 @@ async fn dispatch(
             }
         }
         Command::ResizePty { id, cols, rows } => {
-            // Resolve name to UUID
+            // Resolve name to UUID under lock
             let job_id = {
                 let store_ref = store.lock().await;
-                store_ref.resolve_id(&id)
-            };
-            let job_id = match job_id {
-                Some(jid) => jid,
-                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                let jid = store_ref.resolve_id(&id);
+                match jid {
+                    Some(jid) => jid,
+                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                }
             };
             let mut masters = runner::PTY_PAIRS.lock().await;
             match masters.get_mut(&job_id) {
@@ -961,6 +935,36 @@ async fn dispatch(
         Command::StreamLogs { .. } => {
             // StreamLogs is handled upstream in handle_connection before dispatch.
             Response::err(req_id.clone(), "stream logs not supported via dispatch")
+        }
+        Command::Screen { id, lines } => {
+            // Resolve name to UUID under lock
+            let actual_id = {
+                let store_ref = store.lock().await;
+                let jid = store_ref.resolve_id(&id);
+                match jid {
+                    Some(jid) => jid,
+                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                }
+            };
+            let buffers = runner::SCREEN_BUFFERS.lock().await;
+            let content = buffers.get(&actual_id).map(|buf| {
+                // Return last N lines from the ring buffer
+                let bytes: Vec<u8> = buf.iter().copied().collect();
+                let text = String::from_utf8_lossy(&bytes);
+                let all_lines: Vec<&str> = text.lines().collect();
+                let count = lines.min(all_lines.len());
+                let tail: Vec<String> = all_lines[all_lines.len().saturating_sub(count)..]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                tail
+            });
+            drop(buffers);
+            let lines = content.unwrap_or_default();
+            match serde_json::to_value(lines) {
+                Ok(val) => Response::ok(req_id.clone(), val),
+                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+            }
         }
     };
 
@@ -1044,6 +1048,7 @@ fn args_summary(cmd: &Command) -> String {
         Command::Clean { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
         Command::RunGroup { jobs } => format!("{} jobs", jobs.len()),
         Command::StreamLogs { id } => format!("id={}", id),
+        Command::Screen { id, lines } => format!("id={} lines={}", id, lines),
     }
 }
 

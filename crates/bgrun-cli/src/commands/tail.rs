@@ -47,15 +47,45 @@ pub async fn tail(
         match output_mode(json) {
             crate::output::OutputMode::Human => {
                 if digest {
-                    let total = data["total_lines"].as_u64().unwrap_or(0);
-                    let errors = data["errors"].as_u64().unwrap_or(0);
-                    let warnings = data["warnings"].as_u64().unwrap_or(0);
-                    println!("Lines: {total}  Errors: {errors}  Warnings: {warnings}");
-                    if let Some(err) = data["last_error"].as_str() {
-                        println!(
-                            "Last error (line {}): {err}",
-                            data["last_error_line"].as_u64().unwrap_or(0)
-                        );
+                    // Support both flat digest and combined {digest, lines} format
+                    let digest_obj = data.as_object().and_then(|_| {
+                        if data.get("digest").is_some() {
+                            data["digest"].as_object()
+                        } else {
+                            Some(data.as_object().unwrap())
+                        }
+                    });
+                    if let Some(d) = digest_obj {
+                        let total = d.get("total_lines").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let errors = d.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let warnings = d.get("warnings").and_then(|v| v.as_u64()).unwrap_or(0);
+                        println!("Lines: {total}  Errors: {errors}  Warnings: {warnings}");
+                        if let Some(err) = d.get("last_error").and_then(|v| v.as_str()) {
+                            println!(
+                                "Last error (line {}): {err}",
+                                d.get("last_error_line").and_then(|v| v.as_u64()).unwrap_or(0)
+                            );
+                        }
+                    } else {
+                        let total = data["total_lines"].as_u64().unwrap_or(0);
+                        let errors = data["errors"].as_u64().unwrap_or(0);
+                        let warnings = data["warnings"].as_u64().unwrap_or(0);
+                        println!("Lines: {total}  Errors: {errors}  Warnings: {warnings}");
+                        if let Some(err) = data["last_error"].as_str() {
+                            println!(
+                                "Last error (line {}): {err}",
+                                data["last_error_line"].as_u64().unwrap_or(0)
+                            );
+                        }
+                    }
+                    // If combined with lines, print them too
+                    if let Some(log_lines) = data["lines"].as_array() {
+                        if !log_lines.is_empty() {
+                            println!();
+                            for line in log_lines {
+                                print_log_line(line);
+                            }
+                        }
                     }
                 } else if let Some(log_lines) = data["lines"].as_array() {
                     for line in log_lines {
