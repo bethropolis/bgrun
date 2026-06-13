@@ -1,5 +1,7 @@
 use anyhow::Result;
 use bgrun_proto::{JobRecord, JobStatus};
+use crossterm::style::Stylize;
+use std::io::IsTerminal;
 
 /// Output mode for rendering command results.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -17,25 +19,57 @@ pub fn output_mode(force_json: bool) -> OutputMode {
     }
 }
 
+fn use_color() -> bool {
+    std::io::stdout().is_terminal()
+}
+
+fn color_state(s: &str) -> String {
+    match s {
+        "Ready" | "Exited" => s.green().to_string(),
+        "Running" => s.yellow().to_string(),
+        "Crashed" | "Killed" => s.red().to_string(),
+        _ => s.to_string(),
+    }
+}
+
+fn maybe_bold(label: &str) -> String {
+    if use_color() {
+        label.bold().to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+fn maybe_color_state(s: &str) -> String {
+    if use_color() {
+        color_state(s)
+    } else {
+        s.to_string()
+    }
+}
+
 /// Prints a single job record.
 pub fn print_job(record: &JobRecord, mode: OutputMode) -> Result<()> {
     match mode {
         OutputMode::Human => {
-            println!("ID:       {}", record.id);
-            println!("Name:     {}", record.name.as_deref().unwrap_or("-"));
-            println!("Command:  {}", record.cmd.join(" "));
+            let b = |s: &str| maybe_bold(s);
+            println!("{}:       {}", b("ID"), record.id);
+            println!("{}:     {}", b("Name"), record.name.as_deref().unwrap_or("-"));
+            println!("{}:  {}", b("Command"), record.cmd.join(" "));
             println!(
-                "Pid:      {}",
+                "{}:      {}",
+                b("Pid"),
                 record.pid.map_or("-".into(), |p| p.to_string())
             );
-            println!("State:    {}", record.state);
-            println!("Started:  {}", record.started_at);
-            println!("Workspace: {}", record.workspace.as_deref().unwrap_or("-"));
+            println!("{}:    {}", b("State"), maybe_color_state(&record.state.to_string()));
+            println!("{}:  {}", b("Started"), record.started_at);
+            println!("{}: {}", b("Workspace"), record.workspace.as_deref().unwrap_or("-"));
             if let Some(port) = record.allocated_port {
-                println!("Port:      {}", port);
+                println!("{}:      {}", b("Port"), port);
             }
             if record.health_check.is_some() {
-                println!("Health:    enabled (interval={}s, threshold={})",
+                println!("{}:    enabled (interval={}s, threshold={})",
+                    b("Health"),
                     record.health_interval_secs.unwrap_or(10),
                     record.health_threshold.unwrap_or(3));
             }
@@ -55,22 +89,42 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
                 println!("No jobs.");
                 return Ok(());
             }
-            println!(
-                "{:<24} {:<12} {:<8} {:<6} {:<8} COMMAND",
-                "ID", "NAME", "STATE", "PID", "PORT"
-            );
-            println!("{}", "-".repeat(88));
+            let color = use_color();
+            if color {
+                println!(
+                    "{} {:<22} {} {:<12} {} {:<8} {} {:<5} {} {:<8} {}",
+                    "ID".bold(), "",
+                    "NAME".bold(), "",
+                    "STATE".bold(), "",
+                    "PID".bold(), "",
+                    "PORT".bold(), "",
+                    "COMMAND".bold(),
+                );
+                let rule: String = std::iter::repeat('\u{2500}').take(90).collect();
+                println!("{}", rule.dim());
+            } else {
+                println!(
+                    "  {:<22} {:<12} {:<8} {:<5} {:<8} COMMAND",
+                    "ID", "NAME", "STATE", "PID", "PORT"
+                );
+                println!("  {}", "-".repeat(85));
+            }
             for record in records {
                 let id_short = if record.id.len() > 8 {
                     &record.id[..8]
                 } else {
                     &record.id
                 };
+                let state = if color {
+                    color_state(&record.state.to_string())
+                } else {
+                    record.state.to_string()
+                };
                 println!(
-                    "{:<24} {:<12} {:<8} {:<6} {:<8} {}",
+                    "  {:<22} {:<12} {:<8} {:<5} {:<8} {}",
                     id_short,
                     record.name.as_deref().unwrap_or("-"),
-                    record.state.to_string(),
+                    state,
                     record.pid.map_or("-".into(), |p| p.to_string()),
                     record.allocated_port.map_or("-".into(), |p| p.to_string()),
                     record.cmd.join(" "),
@@ -90,13 +144,15 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
 pub fn print_status(status: &JobStatus, mode: OutputMode) -> Result<()> {
     match mode {
         OutputMode::Human => {
-            println!("State:      {}", status.state);
+            let b = |s: &str| maybe_bold(s);
+            println!("{}:      {}", b("State"), maybe_color_state(&status.state.to_string()));
             println!(
-                "Exit Code:  {}",
+                "{}:  {}",
+                b("Exit Code"),
                 status.exit_code.map_or("-".into(), |c| c.to_string())
             );
-            println!("Ready At:   {}", status.ready_at.as_deref().unwrap_or("-"));
-            println!("Restarts:   {}", status.restart_count);
+            println!("{}:   {}", b("Ready At"), status.ready_at.as_deref().unwrap_or("-"));
+            println!("{}:   {}", b("Restarts"), status.restart_count);
         }
         OutputMode::Json => {
             println!("{}", serde_json::to_string(status)?);
