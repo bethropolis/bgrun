@@ -160,6 +160,7 @@ fn spawn_detached_daemon() -> Result<()> {
     // The caller must ensure the closure only calls async-signal-safe
     // functions. setsid(2) is async-signal-safe per POSIX, and the
     // closure does not heap-allocate, hold locks, or panic.
+    #[allow(unsafe_code)]
     unsafe {
         command.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;

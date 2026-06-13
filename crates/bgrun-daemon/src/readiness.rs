@@ -21,6 +21,7 @@ pub trait ReadinessChecker: Send + Sync {
 /// Checks if a log file contains a substring pattern.
 ///
 /// Tracks the byte offset of the last read so each check only scans new bytes.
+#[derive(Debug)]
 pub struct LogPatternChecker {
     path: PathBuf,
     pattern: String,
@@ -80,6 +81,7 @@ impl ReadinessChecker for LogPatternChecker {
 /// Checks if a log file contains a regex pattern.
 ///
 /// Tracks the byte offset of the last read so each check only scans new bytes.
+#[derive(Debug)]
 pub struct RegexPatternChecker {
     path: PathBuf,
     pattern: regex::Regex,
@@ -135,6 +137,7 @@ impl ReadinessChecker for RegexPatternChecker {
 }
 
 /// Checks if a TCP port is connectable (async).
+#[derive(Debug)]
 pub struct TcpPortChecker {
     port: u16,
 }
@@ -159,6 +162,7 @@ impl ReadinessChecker for TcpPortChecker {
 }
 
 /// Checks if an HTTP endpoint returns 2xx.
+#[derive(Debug)]
 pub struct HttpPollChecker {
     url: String,
     client: reqwest::Client,
@@ -190,6 +194,7 @@ impl ReadinessChecker for HttpPollChecker {
 }
 
 /// Checks if a file exists at a path.
+#[derive(Debug)]
 pub struct FileExistsChecker {
     path: PathBuf,
 }

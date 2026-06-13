@@ -11,7 +11,7 @@ pub enum Error {
 }
 
 /// A managed process tracked by the daemon.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Job {
     pub id: String,
     pub name: Option<String>,
