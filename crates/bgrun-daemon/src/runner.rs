@@ -1122,18 +1122,31 @@ async fn capture_output(
 }
 
 /// Strips raw terminal handshake noise (cursor queries, background color reports,
-/// device attributes) from log lines while leaving standard color codes intact.
+/// device attributes, DCS sequences) from log lines while leaving standard color
+/// codes intact.
 fn scrub_terminal_noise(input: &str) -> String {
     static OSC_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
         Regex::new("\x1b\\][0-9]+;[^\x1b\x07]*(?:\x1b\\\\|\x07)").unwrap()
     });
 
-    static DSR_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new("\x1b\\[\\??[0-9;]*[Rc]").unwrap()
+    static DCS_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new("\x1bP[^\x1b]*\x1b\\\\").unwrap()
     });
 
-    let intermediate = OSC_RE.replace_all(input, "");
-    DSR_RE.replace_all(&intermediate, "").into_owned()
+    static CSI_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new("\x1b\\[[\x3f\x3e]?[0-9;]*[Rcqu]").unwrap()
+    });
+
+    // Cursor movement and erase sequences used by progress bars and shell
+    // rendering — always noise in log output.
+    static CURSOR_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new("\x1b\\[[?]?[0-9;]*[FEGKJ]|\x1b\\[[?]25[hl]").unwrap()
+    });
+
+    let s = OSC_RE.replace_all(input, "");
+    let s = DCS_RE.replace_all(&s, "");
+    let s = CSI_RE.replace_all(&s, "");
+    CURSOR_RE.replace_all(&s, "").into_owned()
 }
 
 /// Writes a single line to the log file as a structured NDJSON entry.
@@ -1284,6 +1297,48 @@ fn capture_pty_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_scrub_terminal_noise() {
+        // CPR response (ending in R)
+        assert_eq!(scrub_terminal_noise("\x1b[35;10R"), "");
+        // DA response (ending in c)
+        assert_eq!(scrub_terminal_noise("\x1b[?62;22;52c"), "");
+        // Keyboard protocol response (ending in u)
+        assert_eq!(scrub_terminal_noise("\x1b[?0u"), "");
+        // Terminal modification response (ending in q)
+        assert_eq!(scrub_terminal_noise("\x1b[>0q"), "");
+        // DCS sequence (ghostty version query)
+        assert_eq!(scrub_terminal_noise("\x1bP>|ghostty 1.3.1-arch2\x1b\\"), "");
+        // DCS sequence (terminal response)
+        assert_eq!(scrub_terminal_noise("\x1bP1+r696E646E=\x1b\\"), "");
+        // OSC sequence (background color report)
+        assert_eq!(scrub_terminal_noise("\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\"), "");
+        // OSC sequence terminated by BEL
+        assert_eq!(scrub_terminal_noise("\x1b]11;rgb:1e1e/1e1e/2e2e\x07"), "");
+        // Cursor movement sequences (progress bar noise)
+        assert_eq!(scrub_terminal_noise("\x1b[1F"), "");
+        assert_eq!(scrub_terminal_noise("\x1b[2E"), "");
+        assert_eq!(scrub_terminal_noise("\x1b[K"), "");
+        assert_eq!(scrub_terminal_noise("\x1b[J"), "");
+        assert_eq!(scrub_terminal_noise("\x1b[?25l"), "");
+        assert_eq!(scrub_terminal_noise("\x1b[?25h"), "");
+        // Cursor horizontal absolute
+        assert_eq!(scrub_terminal_noise("\x1b[42G"), "");
+        // Progress bar noise in context
+        assert_eq!(
+            scrub_terminal_noise("Downloading... \x1b[1F\x1b[K\x1b[1F\x1b[Kfoo 50%\x1b[?25h"),
+            "Downloading... foo 50%"
+        );
+
+        // Standard color codes should NOT be stripped
+        assert_eq!(scrub_terminal_noise("\x1b[31mhello\x1b[0m"), "\x1b[31mhello\x1b[0m");
+        // Mixed: readable text with embedded noise
+        assert_eq!(
+            scrub_terminal_noise("hello \x1b[35;10R world \x1b[?0u!"),
+            "hello  world !"
+        );
+    }
 
     #[tokio::test]
     async fn test_check_log_for_pattern_matches() {

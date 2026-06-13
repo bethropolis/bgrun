@@ -7,8 +7,8 @@ use crate::client::DaemonClient;
 use crate::output::{output_mode, OutputMode};
 
 /// Removes all terminal-state (crashed/exited/killed) jobs.
-pub async fn clean(workspace: Option<String>, json: bool) -> Result<()> {
-    if output_mode(json) == OutputMode::Human {
+pub async fn clean(workspace: Option<String>, json: bool, force: bool) -> Result<()> {
+    if !force && output_mode(json) == OutputMode::Human {
         let prompt = if workspace.is_some() {
             "Remove all terminated jobs in this workspace?"
         } else {
