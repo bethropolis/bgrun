@@ -72,6 +72,18 @@ pub async fn run(
 
     let mut client = DaemonClient::connect(&socket_path).await?;
 
+    // Collect terminal and locale env vars to prevent TUI rendering corruption
+    let mut env = HashMap::new();
+    for (key, val) in std::env::vars() {
+        if key == "TERM"
+            || key == "COLORTERM"
+            || key == "LANG"
+            || key.starts_with("LC_")
+        {
+            env.insert(key, val);
+        }
+    }
+
     // Resolve readiness strategy from flags (first match wins)
     let readiness = flags
         .ready_when_regex
@@ -108,7 +120,7 @@ pub async fn run(
         restart,
         pty: flags.pty,
         max_runtime_ms: flags.max_runtime_ms,
-        env: HashMap::new(),
+        env,
         after: flags.after,
         max_rss_mb: flags.max_rss_mb,
         cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
