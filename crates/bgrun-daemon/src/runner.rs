@@ -8,6 +8,7 @@ use bgrun_core::{Job, JobStore};
 use bgrun_proto::{JobRecord, JobState, RestartPolicy, RunArgs};
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
+use regex::Regex;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -1120,6 +1121,21 @@ async fn capture_output(
     }
 }
 
+/// Strips raw terminal handshake noise (cursor queries, background color reports,
+/// device attributes) from log lines while leaving standard color codes intact.
+fn scrub_terminal_noise(input: &str) -> String {
+    static OSC_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new("\x1b\\][0-9]+;[^\x1b\x07]*(?:\x1b\\\\|\x07)").unwrap()
+    });
+
+    static DSR_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new("\x1b\\[\\??[0-9;]*[Rc]").unwrap()
+    });
+
+    let intermediate = OSC_RE.replace_all(input, "");
+    DSR_RE.replace_all(&intermediate, "").into_owned()
+}
+
 /// Writes a single line to the log file as a structured NDJSON entry.
 /// Serializes per-job to prevent interleaved stdout/stderr lines.
 async fn write_ts_line(
@@ -1133,11 +1149,12 @@ async fn write_ts_line(
     let content = String::from_utf8_lossy(line)
         .trim_end_matches('\n')
         .to_string();
-    let content_for_broadcast = content.clone();
+    let cleaned = scrub_terminal_noise(&content);
+    let content_for_broadcast = cleaned.clone();
     let entry = bgrun_daemon::log_manager::DiskLogEntry {
         t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         s: label.to_string(),
-        c: content,
+        c: cleaned,
     };
     let json = serde_json::to_string(&entry).unwrap_or_default();
 
@@ -1175,11 +1192,12 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     let content = String::from_utf8_lossy(line)
         .trim_end_matches('\n')
         .to_string();
-    let content_for_broadcast = content.clone();
+    let cleaned = scrub_terminal_noise(&content);
+    let content_for_broadcast = cleaned.clone();
     let entry = bgrun_daemon::log_manager::DiskLogEntry {
         t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         s: "pty".to_string(),
-        c: content,
+        c: cleaned,
     };
     let json = serde_json::to_string(&entry).unwrap_or_default();
 
