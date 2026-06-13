@@ -6,6 +6,7 @@ use crate::job::Job;
 use bgrun_proto::JobState;
 
 /// In-memory registry of all jobs managed by the daemon.
+#[derive(Debug)]
 pub struct JobStore {
     jobs: HashMap<String, Job>,
     name_index: HashMap<String, String>,

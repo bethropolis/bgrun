@@ -100,6 +100,7 @@ fn is_process_alive(pid: u32) -> bool {
     // no actual signal is sent. The pid originates from the kernel's
     // own PID assignment and is passed by value — no pointer or
     // memory-safety concern exists.
+    #[allow(unsafe_code)]
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 

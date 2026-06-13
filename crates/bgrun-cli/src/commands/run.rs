@@ -9,6 +9,7 @@ use crate::duration::BgrunDuration;
 use crate::output::{output_mode, print_job};
 
 /// Optional flags for the run command.
+#[derive(Debug)]
 pub struct RunFlags {
     pub ready_when: Option<String>,
     pub ready_when_regex: Option<String>,

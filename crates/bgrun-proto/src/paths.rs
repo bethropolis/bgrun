@@ -8,6 +8,7 @@ pub fn state_dir() -> PathBuf {
         // SAFETY: getuid(2) is a read-only system call that returns
         // the real user ID. It has no memory-safety invariants and is
         // always safe to call from any context.
+        #[allow(unsafe_code)]
         let uid = unsafe { libc::getuid() };
         PathBuf::from(format!("/tmp/bgrun-{}", uid))
     }
@@ -20,6 +21,7 @@ pub fn socket_path() -> PathBuf {
     } else {
         // SAFETY: Same as above — getuid(2) is side-effect-free and
         // requires no special state or valid pointer arguments.
+        #[allow(unsafe_code)]
         let uid = unsafe { libc::getuid() };
         PathBuf::from(format!("/tmp/bgrun-{}", uid)).join("daemon.sock")
     }
