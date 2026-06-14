@@ -31,7 +31,7 @@ Launch a process in the background and tell `bgrun` exactly when it is ready to 
 bgrun run --name dev-server --ready-when-port 3000 "npm run dev"
 ```
 
-### 3. Coordinate Your Workflow
+### 2. Coordinate Your Workflow
 Block execution only until the server is actually ready, inspect its logs, or terminate it cleanly:
 ```bash
 # Block until ready (not a must!)
@@ -62,6 +62,10 @@ bgrun kill dev-server
 | `bgrun attach <id>` | Attach to PTY job interactively |
 | `bgrun expect <id> <pattern>` | Wait for log line matching pattern |
 | `bgrun schema <command>` | Print JSON Schema for command args |
+| `bgrun run-group <name> [name...]` | Start multiple named jobs in parallel |
+| `bgrun screen <id> [--lines N]` | Show last N lines from in-memory ring buffer |
+| `bgrun clean [--workspace <ws>]` | Remove all terminated jobs |
+| `bgrun skill install <dir>` | Install embedded skill bundle |
 
 ## Docs
 

@@ -260,7 +260,7 @@ async fn handle_attach(
                         Ok(0) => break,
                         Ok(n) => {
                             let data = buf[..n].to_vec();
-                            let mut writer = pty_writer.lock().unwrap();
+                            let mut writer = pty_writer.lock().expect("PTY writer lock poisoned");
                             use std::io::Write;
                             if writer.write_all(&data).is_err() {
                                 break;

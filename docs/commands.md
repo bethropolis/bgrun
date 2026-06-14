@@ -1,6 +1,6 @@
 # Command Reference
 
-bgrun has 16 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
+bgrun has 18 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
 
 The daemon auto-starts on the first CLI invocation. You don't need to manually start it.
 
@@ -30,8 +30,14 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--restart on-crash` | Auto-restart if the process exits non-zero (SIGKILL, crash, non-zero exit) |
 | `--backoff <DURATION>` | Delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`) |
 | `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
+| `--max-runtime <D>` | Kill the job after this duration (e.g. `30s`, `5m`) |
 | `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |
 | `--rows <N>` | PTY height in rows (default: 24, only with `--pty`) |
+| `--allocate-port <NAME>` | Allocate a free TCP port and set it as the environment variable `<NAME>` |
+| `--health-check-url <URL>` | Poll an HTTP URL periodically for liveness after ready |
+| `--health-check-port <PORT>` | Probe a TCP port periodically for liveness after ready |
+| `--health-interval <SECS>` | Seconds between health checks (default: 10) |
+| `--health-threshold <N>` | Consecutive health check failures before killing (default: 3) |
 
 **Examples**
 
@@ -123,14 +129,21 @@ bgrun list --workspace myapp
 Get the current state of a job.
 
 ```
-bgrun status <ID>
+bgrun status [<ID>] [--name <NAME>]
 ```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--name / -n <NAME>` | Job name (alternative to positional ID) |
 
 **Examples**
 
 ```bash
 bgrun status abc123
 bgrun status server  # works with names too
+bgrun status --name server
 ```
 
 **Output** (JSON)
@@ -154,7 +167,7 @@ bgrun status server  # works with names too
 Show the last N lines of a job's stdout/stderr log.
 
 ```
-bgrun tail <ID> [--lines <N>] [--digest] [--level <LEVEL>]
+bgrun tail <ID> [--lines <N>] [--digest] [--level <LEVEL>] [--stream <S>] [--strip-ansi] [--follow] [--filter-regex <R>]
 ```
 
 **Flags**
@@ -164,6 +177,10 @@ bgrun tail <ID> [--lines <N>] [--digest] [--level <LEVEL>]
 | `--lines <N>` | Number of lines to show (default: 20) |
 | `--digest` | Show summary instead of raw lines (error/warn count, last error) |
 | `--level <LEVEL>` | Filter lines containing `error` or `warn` (case-insensitive) |
+| `--stream <S>` | Filter by stream source (`stdout`, `stderr`, `pty`) |
+| `--strip-ansi` | Strip ANSI escape codes from output |
+| `--follow` | Follow new log lines in real time |
+| `--filter-regex <R>` | Filter log lines matching a regex pattern |
 
 **Examples**
 
@@ -198,8 +215,17 @@ Human output colorizes errors in red and warnings in yellow.
 Show log lines added since the last `diff` call (tracked via cursor).
 
 ```
-bgrun diff <ID>
+bgrun diff <ID> [--lines <N>] [--stream <S>] [--strip-ansi] [--filter-regex <R>]
 ```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--lines <N>` | Number of lines to show (unlimited if not set) |
+| `--stream <S>` | Filter by stream source (`stdout`, `stderr`, `pty`) |
+| `--strip-ansi` | Strip ANSI escape codes from output |
+| `--filter-regex <R>` | Filter log lines matching a regex pattern |
 
 **Examples**
 
@@ -273,9 +299,15 @@ If the timeout elapses while the job is still Running:
 Terminate a job by ID, name, or entire workspace.
 
 ```
-bgrun kill <ID>
-bgrun kill --workspace <WS>
+bgrun kill [<ID>] [--name <NAME>] [--workspace <WS>]
 ```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--name / -n <NAME>` | Job name (alternative to positional ID) |
+| `--workspace <WS>` | Kill all jobs in a workspace |
 
 Sends `SIGTERM` first, then `SIGKILL` after 5 seconds if the process hasn't exited. Sends to the entire process group, so child processes are cleaned up.
 
@@ -287,6 +319,7 @@ bgrun kill abc123
 
 # Kill by name
 bgrun kill server
+bgrun kill --name server
 
 # Kill all jobs in a workspace
 bgrun kill --workspace myapp
@@ -311,8 +344,15 @@ Workspace kill:
 Write data to a job's stdin.
 
 ```
-bgrun send <ID> <DATA>
+bgrun send <ID> [<DATA>] [--newline] [--enter]
 ```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--newline` | Append a newline to the data |
+| `--enter` | Send just an Enter (newline), optionally with data |
 
 **Examples**
 
@@ -320,21 +360,23 @@ bgrun send <ID> <DATA>
 # Send text
 bgrun send server "/reload"
 
-# Quote if data contains spaces
-bgrun send server "some multi-word input"
+# Append newline
+bgrun send server "/reload" --newline
+
+# Send just Enter (press Return)
+bgrun send server --enter
+
+# Send text followed by Enter
+bgrun send server "yes" --enter
+
+# Using shell escape
+bgrun send server $'yes\n'
 ```
 
 **Output** (JSON)
 
 ```json
 {"ok":true}
-```
-
-**Note:** `bgrun send` does **not** add a trailing newline. For line-buffered programs (e.g. interactive shells), you must include `\n` explicitly:
-
-```bash
-bgrun send server "/reload\n"
-bgrun send server $'yes\n'
 ```
 
 Works with both piped and `--pty` jobs.
@@ -413,6 +455,76 @@ Once attached, the terminal enters raw mode:
 - Terminal resize events are forwarded to the PTY master.
 
 The connection is closed automatically when the job exits.
+
+---
+
+## screen
+
+Show last N lines from a job's in-memory ring buffer (non-blocking). Unlike `bgrun tail`, this reads from a live memory buffer rather than disk, making it suitable for rapid polling without I/O overhead.
+
+```
+bgrun screen <ID> [--lines <N>]
+```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--lines <N>` | Number of lines to show (default: 20) |
+
+**Examples**
+
+```bash
+# Last 20 lines
+bgrun screen server
+
+# Last 5 lines
+bgrun screen server --lines 5
+```
+
+**Output** (JSON)
+
+```json
+["line 1", "line 2", "line 3"]
+```
+
+Human output prints each line directly.
+
+---
+
+## clean
+
+Remove all terminated (crashed/exited/killed) jobs.
+
+```
+bgrun clean [--workspace <WS>] [--force]
+```
+
+**Flags**
+
+| Flag | Description |
+|---|---|
+| `--workspace <WS>` | Only clean jobs in this workspace |
+| `-f / --force` | Skip confirmation prompt |
+
+**Examples**
+
+```bash
+# Remove all terminated jobs
+bgrun clean
+
+# Remove only terminated jobs in a workspace
+bgrun clean --workspace myapp
+
+# Skip confirmation
+bgrun clean --force
+```
+
+**Output** (JSON)
+
+```json
+{"removed":["abc123","def456"]}
+```
 
 ---
 

@@ -88,15 +88,18 @@ complete -c bgrun -n "__fish_use_subcommand" -a "send" -d "Send data to a job's 
 complete -c bgrun -n "__fish_use_subcommand" -a "stats" -d "Show resource stats for a running job"
 complete -c bgrun -n "__fish_use_subcommand" -a "expect" -d "Wait for a pattern in a job's log output"
 complete -c bgrun -n "__fish_use_subcommand" -a "attach" -d "Attach to a PTY job's interactive terminal"
+complete -c bgrun -n "__fish_use_subcommand" -a "screen" -d "Show last N lines from in-memory buffer"
 complete -c bgrun -n "__fish_use_subcommand" -a "schema" -d "Print JSON Schema for a command's arguments"
 complete -c bgrun -n "__fish_use_subcommand" -a "clean" -d "Remove all terminated jobs"
+complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skills"
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID
-complete -c bgrun -n "__fish_seen_subcommand_from status kill wait tail diff send stats attach expect" -a "(bgrun completions --active-ids)"
+complete -c bgrun -n "__fish_seen_subcommand_from status kill wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
 
-# Dynamic workspaces for list and kill
+# Dynamic workspaces for list, kill, and clean
 complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
+complete -c bgrun -n "__fish_seen_subcommand_from clean; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
 
 # Run command flags
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l name -d "Optional name for the job"
@@ -114,7 +117,44 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l cols -d "PTY columns"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l rows -d "PTY rows"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-rss -d "Max RSS in MB"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-runtime -d "Max runtime"
-complete -c bgrun -n "__fish_seen_subcommand_from run" -l json -d "Output in JSON format"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l allocate-port -d "Allocate free port as env var"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-check-url -d "Health check HTTP URL"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-check-port -d "Health check TCP port"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-interval -d "Health check interval in secs"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-threshold -d "Health check failure threshold"
+
+# Tail flags
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l lines -d "Number of lines to show"
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l digest -d "Show digest summary"
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l level -d "Filter by level (error/warn)"
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l stream -d "Filter by stream (stdout/stderr/pty)"
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l strip-ansi -d "Strip ANSI escape codes"
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l follow -d "Follow new log lines"
+complete -c bgrun -n "__fish_seen_subcommand_from tail" -l filter-regex -d "Filter by regex pattern"
+
+# Diff flags
+complete -c bgrun -n "__fish_seen_subcommand_from diff" -l lines -d "Number of lines to show"
+complete -c bgrun -n "__fish_seen_subcommand_from diff" -l stream -d "Filter by stream (stdout/stderr/pty)"
+complete -c bgrun -n "__fish_seen_subcommand_from diff" -l strip-ansi -d "Strip ANSI escape codes"
+complete -c bgrun -n "__fish_seen_subcommand_from diff" -l filter-regex -d "Filter by regex pattern"
+
+# Send flags
+complete -c bgrun -n "__fish_seen_subcommand_from send" -l newline -d "Append newline to data"
+complete -c bgrun -n "__fish_seen_subcommand_from send" -l enter -d "Send an Enter (newline)"
+
+# Screen flags
+complete -c bgrun -n "__fish_seen_subcommand_from screen" -l lines -d "Number of lines to show"
+
+# Clean flags
+complete -c bgrun -n "__fish_seen_subcommand_from clean" -l workspace -d "Workspace to clean"
+complete -c bgrun -n "__fish_seen_subcommand_from clean" -s f -l force -d "Skip confirmation"
+
+# Status flags
+complete -c bgrun -n "__fish_seen_subcommand_from status" -s n -l name -d "Job name"
+
+# Kill flags
+complete -c bgrun -n "__fish_seen_subcommand_from kill" -s n -l name -d "Job name"
+complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspace to kill"
 
 # Global flags
 complete -c bgrun -l json -d "Output in JSON format"
@@ -132,7 +172,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill wait tail diff run-group send stats expect attach schema clean help"
+    local commands="run list status kill wait tail diff run-group send stats expect attach screen schema clean skill help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -140,7 +180,7 @@ _bgrun()
     fi
 
     case "${words[1]}" in
-        status|kill|wait|tail|diff|send|stats|expect|attach)
+        status|kill|wait|tail|diff|send|stats|expect|attach|screen)
             local ids
             ids=$(bgrun completions --active-ids 2>/dev/null | awk '{print $1}')
             COMPREPLY=($(compgen -W "$ids" -- "$cur"))
@@ -158,7 +198,11 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --cols --rows --max-rss --max-runtime"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold"
+            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
+            ;;
+        clean)
+            local opts="--workspace --force"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
     esac
@@ -190,8 +234,10 @@ _bgrun() {
         'stats:Show resource stats for a running job'
         'expect:Wait for a pattern in log output'
         'attach:Attach to a PTY job terminal'
+        'screen:Show last N lines from in-memory buffer'
         'schema:Print JSON Schema for a command'
         'clean:Remove all terminated jobs'
+        'skill:Manage embedded skills'
         'help:Print help'
     )
 
@@ -207,12 +253,12 @@ _bgrun() {
             ;;
         args)
             case "$words[1]" in
-                status|kill|wait|tail|diff|send|stats|expect|attach)
+                status|kill|wait|tail|diff|send|stats|expect|attach|screen)
                     local ids
                     ids=(${(f)"$(_call_program ids bgrun completions --active-ids 2>/dev/null | awk '{print $1}')"})
                     _values 'job id' $ids
                     ;;
-                list|kill)
+                list|kill|clean)
                     _arguments '--workspace[Filter by workspace]:workspace:->workspaces'
                     ;;
                 run)
@@ -231,7 +277,12 @@ _bgrun() {
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \
-                        '--max-runtime=[Max runtime]:duration:'
+                        '--max-runtime=[Max runtime]:duration:' \
+                        '--allocate-port=[Allocate free port as env var]:name:' \
+                        '--health-check-url=[Health check HTTP URL]:url:' \
+                        '--health-check-port=[Health check TCP port]:port:' \
+                        '--health-interval=[Health check interval in secs]:seconds:' \
+                        '--health-threshold=[Health check failure threshold]:count:'
                     ;;
             esac
             ;;

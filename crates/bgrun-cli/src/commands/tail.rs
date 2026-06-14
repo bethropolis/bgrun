@@ -48,11 +48,11 @@ pub async fn tail(
             crate::output::OutputMode::Human => {
                 if digest {
                     // Support both flat digest and combined {digest, lines} format
-                    let digest_obj = data.as_object().and_then(|_| {
+                    let digest_obj = data.as_object().and_then(|obj| {
                         if data.get("digest").is_some() {
                             data["digest"].as_object()
                         } else {
-                            Some(data.as_object().unwrap())
+                            Some(obj)
                         }
                     });
                     if let Some(d) = digest_obj {

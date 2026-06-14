@@ -36,6 +36,8 @@ restart = "on-crash"
 | `ready-when-port` | integer | Mark the job `Ready` when `localhost:<port>` accepts TCP connections. |
 | `ready-when-url` | string | Mark the job `Ready` when `GET <url>` returns HTTP 2xx. |
 | `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
+| `ready-when-regex` | string | Mark the job `Ready` when a log line matches this regex. |
+| `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
 | `restart` | string | `"on-crash"` — restart if the process exits with non-zero code or is killed by signal. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
@@ -45,6 +47,13 @@ restart = "on-crash"
 | `backoff-ms` | integer | Base backoff in ms for restart delay (default: 2000). Doubles each consecutive failure, capped at 5 min. |
 | `cwd` | string | Working directory for the job. |
 | `env` | table | Environment variables, e.g. `env = { FOO = "bar", BAZ = "qux" }`. |
+| `allocate-port` | string | Allocate a free ephemeral TCP port and set it as this env var name (e.g. `"PORT"`). |
+| `health-check-url` | string | Poll this HTTP URL periodically after ready for liveness. |
+| `health-check-port` | integer | Probe this TCP port periodically after ready for liveness. |
+| `health-interval-secs` | integer | Seconds between health checks (default: 10). |
+| `health-threshold` | integer | Consecutive failures before killing (default: 3). |
+| `cols` | integer | PTY width in columns (default: 80, only with `pty = true`). |
+| `rows` | integer | PTY height in rows (default: 24, only with `pty = true`). |
 
 A maximum of one readiness strategy can be configured. If multiple are specified, the CLI picks the first one found in order: `ready-when`, `ready-when-port`, `ready-when-url`, `ready-when-file`.
 

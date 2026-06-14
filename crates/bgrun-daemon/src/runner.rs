@@ -907,7 +907,7 @@ pub async fn send_stdin(
     {
         let mut pty_writers = PTY_WRITERS.lock().await;
         if let Some(writer_arc) = pty_writers.get_mut(&actual_id) {
-            let mut writer = writer_arc.lock().unwrap();
+            let mut writer = writer_arc.lock().expect("PTY writer lock poisoned");
             use std::io::Write;
             writer
                 .write_all(data.as_bytes())
@@ -985,7 +985,7 @@ pub async fn get_stats(
             .ok_or_else(|| anyhow::anyhow!("job has no pid"))?
     };
 
-    let mut sys = SYSINFO_SYSTEM.lock().unwrap();
+    let mut sys = SYSINFO_SYSTEM.lock().expect("sysinfo lock poisoned");
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     let sysinfo_pid = sysinfo::Pid::from_u32(pid);
@@ -1003,7 +1003,7 @@ pub async fn get_stats(
 
 /// Returns the RSS in KB for a given PID, or None if the process is gone.
 fn get_process_rss_kb(pid: u32) -> Option<u64> {
-    let mut sys = SYSINFO_SYSTEM.lock().unwrap();
+    let mut sys = SYSINFO_SYSTEM.lock().expect("sysinfo lock poisoned");
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     sys.process(sysinfo::Pid::from_u32(pid))
         .map(|p| p.memory())

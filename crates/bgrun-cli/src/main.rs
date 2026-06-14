@@ -229,22 +229,23 @@ enum Commands {
         names: Vec<String>,
     },
 
-    /// Send data to a job's stdin
-    Send {
-        /// Job ID or name
-        id: String,
+        /// Send data to a job's stdin
+        Send {
+            /// Job ID or name
+            id: String,
 
-        /// Data to send
-        data: Option<String>,
+            /// Data to send
+            #[arg(required_unless_present_any = ["enter"])]
+            data: Option<String>,
 
-        /// Append a newline to the data
-        #[arg(long)]
-        newline: bool,
+            /// Append a newline to the data (requires data)
+            #[arg(long)]
+            newline: bool,
 
-        /// Send just an Enter (newline) without data
-        #[arg(long)]
-        enter: bool,
-    },
+            /// Send an Enter (newline), optionally with data
+            #[arg(long)]
+            enter: bool,
+        },
 
     /// Show resource stats for a running job
     Stats {
@@ -441,14 +442,19 @@ async fn main() -> Result<()> {
             commands::run_group::run_group(names, json).await?;
         }
         Some(Commands::Send { id, data, newline, enter }) => {
-            let data = if enter {
-                format!("{}\n", data.unwrap_or_default())
+            if enter {
+                let payload = match data {
+                    Some(d) => format!("{d}\n"),
+                    None => "\n".to_string(),
+                };
+                commands::send::send(id, payload, json).await?;
             } else if newline {
-                format!("{}\n", data.unwrap_or_default())
+                let d = data.ok_or_else(|| anyhow::anyhow!("send: --newline requires data"))?;
+                commands::send::send(id, format!("{d}\n"), json).await?;
             } else {
-                data.unwrap_or_default()
-            };
-            commands::send::send(id, data, json).await?;
+                let d = data.ok_or_else(|| anyhow::anyhow!("send: provide data, --newline <data>, or --enter"))?;
+                commands::send::send(id, d, json).await?;
+            }
         }
         Some(Commands::Stats { id }) => {
             commands::stats::stats(id, json).await?;
