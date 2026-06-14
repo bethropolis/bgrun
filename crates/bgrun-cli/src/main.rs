@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
-use std::path::PathBuf;
 
 mod autostart;
 mod client;
@@ -332,10 +331,14 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SkillCommands {
-    /// Install the embedded skill to a target directory
+    /// Install the embedded skill (use a preset name or a directory path)
     Install {
-        /// Target directory (e.g. ~/.config/opencode/skills/bgrun)
-        path: PathBuf,
+        /// Preset name (opencode, claude, codex, all) or directory path
+        target: String,
+
+        /// Install to project-local directory instead of global
+        #[arg(short = 'p', long)]
+        project: bool,
     },
 }
 
@@ -483,8 +486,8 @@ async fn main() -> Result<()> {
             commands::clean::clean(workspace, json, force).await?;
         }
         Some(Commands::Skill { command }) => match command {
-            SkillCommands::Install { path } => {
-                commands::skill::install(path).await?;
+            SkillCommands::Install { target, project } => {
+                commands::skill::install(target, project).await?;
             }
         },
         None => {
