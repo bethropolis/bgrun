@@ -237,7 +237,7 @@ enum Commands {
             #[arg(required_unless_present_any = ["enter"])]
             data: Option<String>,
 
-            /// Append a newline to the data (requires data)
+            /// Append a newline to the data (deprecated: use --enter instead)
             #[arg(long)]
             newline: bool,
 
@@ -452,10 +452,11 @@ async fn main() -> Result<()> {
                 };
                 commands::send::send(id, payload, json).await?;
             } else if newline {
+                eprintln!("warning: --newline is deprecated, use --enter instead");
                 let d = data.ok_or_else(|| anyhow::anyhow!("send: --newline requires data"))?;
                 commands::send::send(id, format!("{d}\n"), json).await?;
             } else {
-                let d = data.ok_or_else(|| anyhow::anyhow!("send: provide data, --newline <data>, or --enter"))?;
+                let d = data.ok_or_else(|| anyhow::anyhow!("send: provide data, --enter, or --newline"))?;
                 commands::send::send(id, d, json).await?;
             }
         }

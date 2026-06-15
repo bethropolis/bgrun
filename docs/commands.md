@@ -351,7 +351,7 @@ bgrun send <ID> [<DATA>] [--newline] [--enter]
 
 | Flag | Description |
 |---|---|
-| `--newline` | Append a newline to the data |
+| `--newline` | Append a newline to the data *(deprecated: use `--enter` instead)* |
 | `--enter` | Send just an Enter (newline), optionally with data |
 
 **Examples**
