@@ -3,6 +3,8 @@ set -eu
 
 REPO="bethropolis/bgrun"
 INSTALL_DIR="${HOME}/.local/bin"
+MAX_RETRIES=3
+RETRY_DELAY=5
 
 case "$(uname -m)" in
   x86_64)  ARCH="amd64" ;;
@@ -20,15 +22,34 @@ if [ "$OS" != "linux" ]; then
   exit 1
 fi
 
+fetch_latest_url() {
+  curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep "browser_download_url.*${OS}_${ARCH}" \
+    | head -1 \
+    | cut -d '"' -f 4
+}
+
 echo "==> Fetching latest release for ${OS}/${ARCH}..."
 
-DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep "browser_download_url.*${OS}_${ARCH}" \
-  | head -1 \
-  | cut -d '"' -f 4)
+DOWNLOAD_URL=""
+for i in 1 2 3; do
+  DOWNLOAD_URL=$(fetch_latest_url) || true
+  if [ -n "$DOWNLOAD_URL" ]; then
+    break
+  fi
+  # Check for rate limiting
+  RATE_LIMIT=$(curl -s -o /dev/null -w "%{http_code}" "https://api.github.com/rate_limit" 2>/dev/null || echo "200")
+  if [ "$RATE_LIMIT" = "403" ]; then
+    echo "==> GitHub API rate limited. Waiting ${RETRY_DELAY}s before retry (${i}/${MAX_RETRIES})..."
+  else
+    echo "==> Release assets not ready yet. Waiting ${RETRY_DELAY}s before retry (${i}/${MAX_RETRIES})..."
+  fi
+  sleep "$RETRY_DELAY"
+done
 
 if [ -z "$DOWNLOAD_URL" ]; then
-  echo "No release found for ${OS}/${ARCH}"
+  echo "No release found for ${OS}/${ARCH} after ${MAX_RETRIES} attempts."
+  echo "You can manually download from: https://github.com/${REPO}/releases/latest"
   exit 1
 fi
 
