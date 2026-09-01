@@ -8,8 +8,8 @@ RETRY_DELAY=5
 
 # ── colors & symbols (auto-disable if not a tty) ────────────────────────────
 if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && [ "${NO_COLOR:-}" = "" ]; then
-  BOLD="\033[1m"; DIM="\033[2m"; RESET="\033[0m"
-  GREEN="\033[32m"; CYAN="\033[36m"; YELLOW="\033[33m"; RED="\033[31m"; GREY="\033[90m"
+  BOLD=$(printf '\033[1m'); DIM=$(printf '\033[2m'); RESET=$(printf '\033[0m')
+  GREEN=$(printf '\033[32m'); CYAN=$(printf '\033[36m'); YELLOW=$(printf '\033[33m'); RED=$(printf '\033[31m'); GREY=$(printf '\033[90m')
 else
   BOLD=""; DIM=""; RESET=""; GREEN=""; CYAN=""; YELLOW=""; RED=""; GREY=""
 fi
