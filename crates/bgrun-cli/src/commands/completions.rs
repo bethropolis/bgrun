@@ -122,6 +122,11 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-check-url -d "H
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-check-port -d "Health check TCP port"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-interval -d "Health check interval in secs"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l health-threshold -d "Health check failure threshold"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l env -s e -d "Env var KEY=VAL (repeatable)"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l cwd -s C -d "Working directory"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l replace -d "Kill existing same-name job first"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l wait -d "Block until Ready after starting"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l wait-timeout -d "Timeout for --wait"
 
 # Tail flags
 complete -c bgrun -n "__fish_seen_subcommand_from tail" -l lines -d "Number of lines to show"
@@ -198,7 +203,7 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         clean)
@@ -282,7 +287,12 @@ _bgrun() {
                         '--health-check-url=[Health check HTTP URL]:url:' \
                         '--health-check-port=[Health check TCP port]:port:' \
                         '--health-interval=[Health check interval in secs]:seconds:' \
-                        '--health-threshold=[Health check failure threshold]:count:'
+                        '--health-threshold=[Health check failure threshold]:count:' \
+                        '--env=[Env var KEY=VAL]:kv:' \
+                        '--cwd=[Working directory]:dir:_files -/' \
+                        '--replace[Kill existing same-name job first]' \
+                        '--wait[Block until Ready after starting]' \
+                        '--wait-timeout=[Timeout for --wait]:duration:'
                     ;;
             esac
             ;;

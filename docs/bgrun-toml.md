@@ -36,7 +36,7 @@ restart = "on-crash"
 | `ready-when-port` | integer | Mark the job `Ready` when `localhost:<port>` accepts TCP connections. |
 | `ready-when-url` | string | Mark the job `Ready` when `GET <url>` returns HTTP 2xx. |
 | `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
-| `ready-when-regex` | string | Mark the job `Ready` when a log line matches this regex. |
+| `ready-when-regex` | string | Mark the job `Ready` when a log line matches this regex. CLI flag `--ready-when-regex` takes precedence. |
 | `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
 | `restart` | string | `"on-crash"` — restart if the process exits with non-zero code or is killed by signal. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |

@@ -38,6 +38,20 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--health-check-port <PORT>` | Probe a TCP port periodically for liveness after ready |
 | `--health-interval <SECS>` | Seconds between health checks (default: 10) |
 | `--health-threshold <N>` | Consecutive health check failures before killing (default: 3) |
+| `-e, --env <KEY=VAL>` | Environment variable for the job (repeatable) |
+| `-C, --cwd <DIR>` | Working directory for the job (default: current directory) |
+| `--replace` | Kill any existing alive job with the same `--name` before starting (requires `--name`) |
+| `--wait` | Block until the job is `Ready` after starting (single-shot run+wait) |
+| `--wait-timeout <D>` | Timeout for `--wait` (e.g. `30s`, `2m`, default: `60s`) |
+
+Short flags: `-n` (`--name`), `-w` (`--workspace`), `-r` (`--ready-when`), `-e` (`--env`), `-C` (`--cwd`).
+
+**Agent shortcut** — start and wait in one call instead of separate `run` + `wait`:
+
+```bash
+bgrun run -n server -r "listening on" --wait --wait-timeout 30s "npm run dev"
+bgrun run -n worker -e QUEUE=jobs -e RUST_LOG=debug -C ./worker --replace "python worker.py"
+```
 
 **Examples**
 

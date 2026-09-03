@@ -27,6 +27,8 @@ pub struct JobConfig {
     pub cmd: TomlCmd,
     #[serde(rename = "ready-when")]
     pub ready_when: Option<String>,
+    #[serde(rename = "ready-when-regex")]
+    pub ready_when_regex: Option<String>,
     #[serde(rename = "ready-when-port")]
     pub ready_when_port: Option<u16>,
     #[serde(rename = "ready-when-url")]
@@ -90,9 +92,14 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
 
     // Resolve readiness strategy
     let readiness = job
-        .ready_when
+        .ready_when_regex
         .as_ref()
-        .map(|p| ReadinessStrategy::LogPattern(p.clone()))
+        .map(|p| ReadinessStrategy::LogPatternRegex(p.clone()))
+        .or_else(|| {
+            job.ready_when
+                .as_ref()
+                .map(|p| ReadinessStrategy::LogPattern(p.clone()))
+        })
         .or_else(|| job.ready_when_port.map(ReadinessStrategy::TcpPort))
         .or_else(|| {
             job.ready_when_url
@@ -243,6 +250,21 @@ cmd = "echo 'hello world'"
         let config = parse_config(toml).unwrap();
         let args = resolve_job_args("test", &config).unwrap();
         assert_eq!(args.cmd, vec!["echo", "hello world"]);
+    }
+
+    #[test]
+    fn test_resolve_ready_when_regex() {
+        let toml = r#"
+[jobs.api]
+cmd = "cargo run"
+ready-when-regex = "listening on :\\d+"
+"#;
+        let config = parse_config(toml).unwrap();
+        let args = resolve_job_args("api", &config).unwrap();
+        assert_eq!(
+            args.readiness,
+            Some(ReadinessStrategy::LogPatternRegex("listening on :\\d+".into()))
+        );
     }
 
     #[test]

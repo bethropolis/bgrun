@@ -22,10 +22,16 @@ monitors readiness. Output is NDJSON when piped, human-readable on TTY.
 ## Core workflow
 
 ```bash
-bgrun run -n server -w "listening on" cargo run     # start + get job ID
-bgrun wait <id> --timeout 30s                        # block until ready
+bgrun run -n server -r "listening on" --wait --wait-timeout 30s cargo run  # start + wait in one call
 bgrun tail <id> --digest                             # check logs cheaply
 bgrun kill <id>                                      # clean up
+```
+
+Separate `run` + `wait` also works when you need the job ID first:
+
+```bash
+bgrun run -n server -r "listening on" cargo run
+bgrun wait <id> --timeout 30s
 ```
 
 ## Common commands
@@ -62,6 +68,11 @@ bgrun kill <id>                                      # clean up
 | `--restart on-crash` | Auto-restart on non-zero exit |
 | `--backoff <duration>` | Delay between restarts |
 | `--pty` | Allocate pseudo-terminal |
+| `-e, --env <KEY=VAL>` | Env var for the job (repeatable) |
+| `-C, --cwd <DIR>` | Working directory (default: cwd) |
+| `--replace` | Kill existing same-name job first (needs `-n`) |
+| `--wait` | Block until Ready after starting |
+| `--wait-timeout <d>` | Timeout for `--wait` (default: `60s`) |
 | `--max-rss <mb>` | Kill if RSS exceeds this threshold |
 | `--max-runtime <duration>` | Kill after this duration |
 | `--allocate-port <name>` | Allocate free port as env var |

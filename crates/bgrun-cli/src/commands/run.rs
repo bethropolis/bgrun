@@ -29,6 +29,26 @@ pub struct RunFlags {
     pub health_check_port: Option<u16>,
     pub health_interval: Option<u64>,
     pub health_threshold: Option<u32>,
+    pub env: Vec<String>,
+    pub cwd: Option<String>,
+    pub replace: bool,
+    pub wait: bool,
+    pub wait_timeout: String,
+}
+
+/// Parses `KEY=VAL` entries into a map. Errors on missing `=` or empty keys.
+fn parse_env_list(entries: &[String]) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    for entry in entries {
+        let (key, val) = entry.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("invalid --env {entry:?}: expected KEY=VAL")
+        })?;
+        if key.is_empty() {
+            anyhow::bail!("invalid --env {entry:?}: key must not be empty");
+        }
+        out.insert(key.to_string(), val.to_string());
+    }
+    Ok(out)
 }
 
 /// Runs a command in the background via the daemon.
@@ -71,9 +91,33 @@ pub async fn run(
         cmd = vec!["sh".into(), "-c".into(), shell_cmd];
     }
 
+    if flags.replace && name.is_none() {
+        anyhow::bail!("run: --replace requires --name");
+    }
+
+    // Validate --wait timeout early so typos fail before spawning.
+    if flags.wait {
+        flags.wait_timeout.parse::<BgrunDuration>()?;
+    }
+
     let mut client = DaemonClient::connect(&socket_path).await?;
 
-    // Collect terminal and locale env vars to prevent TUI rendering corruption
+    // --replace: kill any alive job with the same name first (best effort).
+    if flags.replace {
+        if let Some(ref n) = name {
+            let kill_args = bgrun_proto::KillArgs {
+                id: Some(n.clone()),
+                workspace: None,
+            };
+            // Ignore errors: job may not exist, which is the common case.
+            let _ = client
+                .send::<serde_json::Value>(Command::Kill(kill_args))
+                .await;
+        }
+    }
+
+    // Collect terminal and locale env vars to prevent TUI rendering corruption,
+    // then overlay explicit --env entries (explicit wins).
     let mut env = HashMap::new();
     for (key, val) in std::env::vars() {
         if key == "TERM"
@@ -84,6 +128,7 @@ pub async fn run(
             env.insert(key, val);
         }
     }
+    env.extend(parse_env_list(&flags.env)?);
 
     // Resolve readiness strategy from flags (first match wins)
     let readiness = flags
@@ -113,6 +158,13 @@ pub async fn run(
         .map(|u| ReadinessStrategy::HttpPoll(u.clone()))
         .or_else(|| flags.health_check_port.map(ReadinessStrategy::TcpPort));
 
+    let cwd = match flags.cwd {
+        Some(c) => Some(c),
+        None => std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+    };
+
     let args = RunArgs {
         cmd,
         name,
@@ -124,7 +176,7 @@ pub async fn run(
         env,
         after: flags.after,
         max_rss_mb: flags.max_rss_mb,
-        cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+        cwd,
         pty_cols: flags.pty_cols,
         pty_rows: flags.pty_rows,
         allocate_port: flags.allocate_port,
@@ -140,10 +192,64 @@ pub async fn run(
         anyhow::bail!("run: {err}");
     }
 
-    if let Some(record) = response.data {
-        print_job(&record, output_mode(json))?;
+    let record = response.data.ok_or_else(|| anyhow::anyhow!("run: empty response from daemon"))?;
+    print_job(&record, output_mode(json))?;
+
+    // --wait: block until Ready (single-shot run+wait for agents).
+    if flags.wait {
+        wait_for_started_job(&mut client, &record.id, &flags.wait_timeout, json).await?;
     }
 
+    Ok(())
+}
+
+/// Waits for a just-started job to become Ready and reports the outcome.
+async fn wait_for_started_job(
+    client: &mut DaemonClient,
+    job_id: &str,
+    timeout: &str,
+    json: bool,
+) -> Result<()> {
+    let timeout_ms = timeout.parse::<BgrunDuration>()?.0;
+    let wait_resp = client
+        .send::<bgrun_proto::WaitResult>(Command::Wait {
+            id: job_id.to_string(),
+            timeout_ms,
+        })
+        .await?;
+    if !wait_resp.ok {
+        let err = wait_resp.error.unwrap_or_default();
+        anyhow::bail!("run --wait: {err}");
+    }
+    if let Some(result) = wait_resp.data {
+        print_wait_result(job_id, &result, json)?;
+    }
+    Ok(())
+}
+
+/// Prints a wait outcome in human or JSON form.
+fn print_wait_result(job_id: &str, result: &bgrun_proto::WaitResult, json: bool) -> Result<()> {
+    match output_mode(json) {
+        crate::output::OutputMode::Human => {
+            if result.ready {
+                println!("Job {job_id} is ready ({}ms)", result.elapsed_ms);
+            } else if let Some(ref s) = result.state {
+                let ec = result
+                    .exit_code
+                    .map(|c| format!(", exit_code={c}"))
+                    .unwrap_or_default();
+                println!("Job {job_id} reached terminal state {s}{ec} ({}ms)", result.elapsed_ms);
+            } else {
+                println!(
+                    "Job {job_id} did not become ready within {}ms",
+                    result.elapsed_ms
+                );
+            }
+        }
+        crate::output::OutputMode::Json => {
+            println!("{}", serde_json::to_string(result)?);
+        }
+    }
     Ok(())
 }
 

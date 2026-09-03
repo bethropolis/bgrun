@@ -36,15 +36,15 @@ enum Commands {
         cmd: Vec<String>,
 
         /// Optional name for the job
-        #[arg(long)]
+        #[arg(short = 'n', long)]
         name: Option<String>,
 
         /// Optional workspace tag
-        #[arg(long)]
+        #[arg(short = 'w', long)]
         workspace: Option<String>,
 
         /// Readiness: match a log pattern (substring)
-        #[arg(long)]
+        #[arg(short = 'r', long)]
         ready_when: Option<String>,
 
         /// Readiness: match a log pattern (regex)
@@ -114,6 +114,26 @@ enum Commands {
         /// Consecutive health check failures before killing (default 3)
         #[arg(long)]
         health_threshold: Option<u32>,
+
+        /// Environment variables (KEY=VAL, repeatable)
+        #[arg(short = 'e', long = "env")]
+        env: Vec<String>,
+
+        /// Working directory for the job (default: current directory)
+        #[arg(short = 'C', long)]
+        cwd: Option<String>,
+
+        /// Kill any existing alive job with the same --name before starting
+        #[arg(long)]
+        replace: bool,
+
+        /// Block until the job is Ready (or timeout) after starting
+        #[arg(long)]
+        wait: bool,
+
+        /// Timeout for --wait (e.g. "30s", "2m", default "60s")
+        #[arg(long, default_value = "60s")]
+        wait_timeout: String,
     },
 
     /// List running jobs
@@ -370,6 +390,11 @@ async fn main() -> Result<()> {
             health_check_port,
             health_interval,
             health_threshold,
+            env,
+            cwd,
+            replace,
+            wait,
+            wait_timeout,
         }) => {
             let max_runtime_ms = match max_runtime {
                 Some(ref s) => Some(s.parse::<duration::BgrunDuration>()?.0),
@@ -394,6 +419,11 @@ async fn main() -> Result<()> {
                 health_check_port,
                 health_interval,
                 health_threshold,
+                env,
+                cwd,
+                replace,
+                wait,
+                wait_timeout,
             };
             commands::run::run(cmd, name, workspace, flags, json).await?;
         }
