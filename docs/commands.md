@@ -653,16 +653,19 @@ complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg
 
 ## Interactive menu
 
-Running `bgrun` without any subcommand opens an interactive TUI menu:
+Running `bgrun -i` (or `bgrun` with no subcommand) opens an interactive menu:
 
-- **List & Refresh Jobs** — runs `bgrun list`
-- **View Job Status/Stats** — select a job, shows status and resource stats
-- **Attach to Interactive PTY** — select a job and attach
-- **Tail Job Logs** — select a job, shows last 20 lines
-- **Kill a Job** — select a job and kill it
-- **Exit Menu**
+- **Workspace filter** — optionally scope the whole session to one workspace
+- **Dashboard** — live counts on every loop (`N job(s) · M alive · K terminated`)
+- **Browse jobs** — filterable picker (`short-id | name [state] | command`), then a per-job submenu:
+  status + stats, tail (with lines/digest/level prompts), screen buffer, diff,
+  send stdin, wait until ready, expect pattern, PTY attach, kill (with confirm)
+- **Start a new job** — prompts for command, name, ready pattern, env vars,
+  and optional wait-until-ready
+- **Clean terminated jobs** — remove exited/crashed/killed jobs in scope
+- **Change workspace filter / Exit**
 
-The job list is populated live from the daemon, showing short ID, name, state, and command.
+ESC goes back a level; Ctrl+C exits. The job list is populated live from the daemon.
 
 ---
 
