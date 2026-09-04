@@ -8,6 +8,8 @@ complete -c bgrun -n "__fish_use_subcommand" -a "run" -d "Run a command in the b
 complete -c bgrun -n "__fish_use_subcommand" -a "list" -d "List running jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "status" -d "Get status of a job"
 complete -c bgrun -n "__fish_use_subcommand" -a "kill" -d "Kill a job"
+complete -c bgrun -n "__fish_use_subcommand" -a "stop" -d "Gracefully stop a job"
+complete -c bgrun -n "__fish_use_subcommand" -a "restart" -d "Restart a job from its stored definition"
 complete -c bgrun -n "__fish_use_subcommand" -a "wait" -d "Wait for a job to become ready"
 complete -c bgrun -n "__fish_use_subcommand" -a "tail" -d "Show the last N lines of a job's log"
 complete -c bgrun -n "__fish_use_subcommand" -a "diff" -d "Show log lines since the last diff call"
@@ -23,7 +25,7 @@ complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skil
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID
-complete -c bgrun -n "__fish_seen_subcommand_from status kill wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
+complete -c bgrun -n "__fish_seen_subcommand_from status kill stop restart wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
 
 # Dynamic workspaces for list, kill, and clean
 complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
@@ -89,6 +91,9 @@ complete -c bgrun -n "__fish_seen_subcommand_from status" -s n -l name -d "Job n
 # Kill flags
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -s n -l name -d "Job name"
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspace to kill"
+
+# Stop / restart flags
+complete -c bgrun -n "__fish_seen_subcommand_from stop restart" -l timeout -d "Grace period before SIGKILL"
 
 # Global flags
 complete -c bgrun -l json -d "Output in JSON format"

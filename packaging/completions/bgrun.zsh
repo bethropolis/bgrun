@@ -11,6 +11,8 @@ _bgrun() {
         'list:List running jobs'
         'status:Get status of a job'
         'kill:Kill a job'
+        'stop:Gracefully stop a job'
+        'restart:Restart a job from its stored definition'
         'wait:Wait for a job to become ready'
         'tail:Show the last N lines of a job log'
         'diff:Show log lines since the last diff call'
@@ -38,7 +40,7 @@ _bgrun() {
             ;;
         args)
             case "$words[1]" in
-                status|kill|wait|tail|diff|send|stats|expect|attach|screen)
+        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen)
                     local ids
                     ids=(${(f)"$(_call_program ids bgrun completions --active-ids 2>/dev/null | awk '{print $1}')"})
                     _values 'job id' $ids
@@ -74,6 +76,9 @@ _bgrun() {
                         '--replace[Kill existing same-name job first]' \
                         '--wait[Block until Ready after starting]' \
                         '--wait-timeout=[Timeout for --wait]:duration:'
+                    ;;
+                stop|restart)
+                    _arguments '--timeout=[Grace period before SIGKILL]:duration:'
                     ;;
             esac
             ;;

@@ -148,6 +148,8 @@ async fn job_menu(record: JobRecord) -> Result<()> {
             "Wait until ready",
             "Expect log pattern",
             "Attach to PTY",
+            "Stop job (graceful)",
+            "Restart job (same definition)",
             "Kill job",
             "← Back to main menu",
         ];
@@ -176,6 +178,21 @@ async fn job_menu(record: JobRecord) -> Result<()> {
             "Expect log pattern" => expect_flow(&id).await?,
             "Attach to PTY" => {
                 let _ = crate::commands::attach::attach_job(id.clone(), false).await;
+            }
+            "Stop job (graceful)" => {
+                let _ = crate::commands::stop::stop(id.clone(), "10s".into(), false).await;
+                break;
+            }
+            "Restart job (same definition)" => {
+                let confirm = Confirm::new(&format!("Restart job {name}?"))
+                    .with_default(false)
+                    .prompt_skippable()?;
+                if confirm.unwrap_or(false) {
+                    let _ =
+                        crate::commands::restart::restart(id.clone(), "10s".into(), false).await;
+                    // The restarted job has a new UUID; go back for a fresh list.
+                    break;
+                }
             }
             "Kill job" => {
                 let confirm = Confirm::new(&format!("Kill job {name}?"))

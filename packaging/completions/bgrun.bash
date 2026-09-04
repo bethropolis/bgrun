@@ -7,7 +7,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill wait tail diff run-group send stats expect attach screen schema clean skill help"
+    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen schema clean skill help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -35,6 +35,9 @@ _bgrun()
         run)
             local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
+            ;;
+        stop|restart)
+            COMPREPLY=($(compgen -W "--timeout" -- "$cur"))
             ;;
         clean)
             local opts="--workspace --force"

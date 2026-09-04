@@ -354,6 +354,48 @@ Workspace kill:
 
 ---
 
+## stop
+
+Gracefully stop a job: `SIGTERM` (escalating to `SIGKILL` after the grace period), then mark it `Killed`.
+
+```
+bgrun stop <ID> [--timeout <DURATION>]
+```
+
+| Flag | Description |
+|---|---|
+| `--timeout <D>` | Grace period before `SIGKILL` escalation (e.g. `5s`, default: `10s`) |
+
+Unlike `kill`, `stop` also works on terminal-state jobs (`Exited`/`Crashed`): marking them `Killed` suppresses any pending policy restarts, so `stop` can break an `--restart always` loop that `kill` refuses to touch.
+
+```bash
+bgrun stop server
+bgrun stop server --timeout 5s
+```
+
+**Output** (JSON): `{"stopped":["abc123"]}`
+
+---
+
+## restart
+
+Stop the live process (if any) and re-spawn the job from its stored definition — command, env, cwd, readiness, restart policy — returning the new record. No backoff is applied; the failure streak resets but the lifetime restart count is preserved.
+
+```
+bgrun restart <ID> [--timeout <DURATION>]
+```
+
+| Flag | Description |
+|---|---|
+| `--timeout <D>` | Grace period for stopping the old process (e.g. `5s`, default: `10s`) |
+
+```bash
+bgrun restart server
+bgrun restart abc123 --timeout 5s
+```
+
+---
+
 ## send
 
 Write data to a job's stdin.
@@ -660,7 +702,8 @@ Running `bgrun -i` (or `bgrun` with no subcommand) opens an interactive menu:
 - **Dashboard** — live counts on every loop (`N job(s) · M alive · K terminated`)
 - **Browse jobs** — filterable picker (`short-id | name [state] | command`), then a per-job submenu:
   status + stats, tail (with lines/digest/level prompts), screen buffer, diff,
-  send stdin, wait until ready, expect pattern, PTY attach, kill (with confirm)
+  send stdin, wait until ready, expect pattern, PTY attach, graceful stop,
+  restart from stored definition, kill (with confirm)
 - **Start a new job** — prompts for command, name, ready pattern, env vars,
   and optional wait-until-ready
 - **Clean terminated jobs** — remove exited/crashed/killed jobs in scope

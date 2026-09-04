@@ -80,6 +80,8 @@ complete -c bgrun -n "__fish_use_subcommand" -a "run" -d "Run a command in the b
 complete -c bgrun -n "__fish_use_subcommand" -a "list" -d "List running jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "status" -d "Get status of a job"
 complete -c bgrun -n "__fish_use_subcommand" -a "kill" -d "Kill a job"
+complete -c bgrun -n "__fish_use_subcommand" -a "stop" -d "Gracefully stop a job"
+complete -c bgrun -n "__fish_use_subcommand" -a "restart" -d "Restart a job from its stored definition"
 complete -c bgrun -n "__fish_use_subcommand" -a "wait" -d "Wait for a job to become ready"
 complete -c bgrun -n "__fish_use_subcommand" -a "tail" -d "Show the last N lines of a job's log"
 complete -c bgrun -n "__fish_use_subcommand" -a "diff" -d "Show log lines since the last diff call"
@@ -95,7 +97,7 @@ complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skil
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID
-complete -c bgrun -n "__fish_seen_subcommand_from status kill wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
+complete -c bgrun -n "__fish_seen_subcommand_from status kill stop restart wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
 
 # Dynamic workspaces for list, kill, and clean
 complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
@@ -162,6 +164,9 @@ complete -c bgrun -n "__fish_seen_subcommand_from status" -s n -l name -d "Job n
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -s n -l name -d "Job name"
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspace to kill"
 
+# Stop / restart flags
+complete -c bgrun -n "__fish_seen_subcommand_from stop restart" -l timeout -d "Grace period before SIGKILL"
+
 # Global flags
 complete -c bgrun -l json -d "Output in JSON format"
 complete -c bgrun -l help -d "Print help" -s h
@@ -178,7 +183,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill wait tail diff run-group send stats expect attach screen schema clean skill help"
+    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen schema clean skill help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -207,6 +212,9 @@ _bgrun()
             local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
+        stop|restart)
+            COMPREPLY=($(compgen -W "--timeout" -- "$cur"))
+            ;;
         clean)
             local opts="--workspace --force"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
@@ -232,6 +240,8 @@ _bgrun() {
         'list:List running jobs'
         'status:Get status of a job'
         'kill:Kill a job'
+        'stop:Gracefully stop a job'
+        'restart:Restart a job from its stored definition'
         'wait:Wait for a job to become ready'
         'tail:Show the last N lines of a job log'
         'diff:Show log lines since the last diff call'
@@ -259,7 +269,7 @@ _bgrun() {
             ;;
         args)
             case "$words[1]" in
-                status|kill|wait|tail|diff|send|stats|expect|attach|screen)
+        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen)
                     local ids
                     ids=(${(f)"$(_call_program ids bgrun completions --active-ids 2>/dev/null | awk '{print $1}')"})
                     _values 'job id' $ids
@@ -295,6 +305,9 @@ _bgrun() {
                         '--replace[Kill existing same-name job first]' \
                         '--wait[Block until Ready after starting]' \
                         '--wait-timeout=[Timeout for --wait]:duration:'
+                    ;;
+                stop|restart)
+                    _arguments '--timeout=[Grace period before SIGKILL]:duration:'
                     ;;
             esac
             ;;

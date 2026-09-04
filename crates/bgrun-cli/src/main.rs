@@ -171,6 +171,27 @@ enum Commands {
         workspace: Option<String>,
     },
 
+    /// Gracefully stop a job (SIGTERM, escalating to SIGKILL).
+    /// Also works on terminal-state jobs to suppress pending restarts.
+    Stop {
+        /// Job ID or name
+        id: String,
+
+        /// Grace period before SIGKILL escalation (e.g. "5s", default "10s")
+        #[arg(long, default_value = "10s")]
+        timeout: String,
+    },
+
+    /// Stop (if alive) and re-spawn a job from its stored definition
+    Restart {
+        /// Job ID or name
+        id: String,
+
+        /// Grace period for stopping the old process (e.g. "5s", default "10s")
+        #[arg(long, default_value = "10s")]
+        timeout: String,
+    },
+
     /// Wait for a job to become ready
     Wait {
         /// Job ID
@@ -448,6 +469,12 @@ async fn main() -> Result<()> {
                 (None, None) => None,
             };
             commands::kill::kill(id, workspace, json).await?;
+        }
+        Some(Commands::Stop { id, timeout }) => {
+            commands::stop::stop(id, timeout, json).await?;
+        }
+        Some(Commands::Restart { id, timeout }) => {
+            commands::restart::restart(id, timeout, json).await?;
         }
         Some(Commands::Wait { id, timeout }) => {
             commands::wait::wait(id, timeout, json).await?;

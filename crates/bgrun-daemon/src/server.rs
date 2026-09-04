@@ -510,6 +510,20 @@ async fn dispatch(
                 None => Response::err(req_id.clone(), "id or workspace is required"),
             },
         },
+        Command::Stop { id, timeout_ms } => match runner::stop_job(&id, timeout_ms, store).await
+        {
+            Ok(()) => Response::ok(req_id.clone(), serde_json::json!({"stopped": [id]})),
+            Err(e) => Response::err(req_id.clone(), e.to_string()),
+        },
+        Command::Restart { id, timeout_ms } => {
+            match runner::restart_job_now(&id, timeout_ms, store).await {
+                Ok(record) => match serde_json::to_value(record) {
+                    Ok(val) => Response::ok(req_id.clone(), val),
+                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+                },
+                Err(e) => Response::err(req_id.clone(), e.to_string()),
+            }
+        }
         Command::Wait { id, timeout_ms } => {
             let start = tokio::time::Instant::now();
             let timeout = std::time::Duration::from_millis(timeout_ms);
@@ -1019,6 +1033,8 @@ fn args_summary(cmd: &Command) -> String {
             (_, Some(ws)) => format!("workspace={}", ws),
             _ => "".into(),
         },
+        Command::Stop { id, .. } => format!("id={}", id),
+        Command::Restart { id, .. } => format!("id={}", id),
         Command::Tail(TailArgs { id, lines, filter_regex, .. }) => {
             let mut s = format!("id={} lines={}", id, lines);
             if filter_regex.is_some() {

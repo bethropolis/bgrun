@@ -575,7 +575,24 @@ fn restart_job(
         }
     }
 
-    let args = RunArgs {
+    let args = run_args_from_job(&job);
+
+    info!(id = %id, "restarting crashed job");
+    // Carry the failure streak across the record swap: without this every
+    // generation starts at 0, so neither exponential backoff growth nor the
+    // max-retries gate would ever engage.
+    match swap_record(&id, args, job.restart_count, job.consecutive_failures, &store).await {
+        Ok(_) => info!(id = %id, "restart succeeded"),
+        Err(e) => error!(id = %id, error = %e, "restart failed"),
+    }
+    })
+}
+
+/// Rebuilds spawn arguments from a stored job definition. Skips the
+/// dependency gate (`after`) and port allocation (re-allocated on spawn);
+/// PTY dimensions fall back to defaults.
+fn run_args_from_job(job: &Job) -> RunArgs {
+    RunArgs {
         cmd: job.cmd.clone(),
         name: job.name.clone(),
         workspace: job.workspace.clone(),
@@ -594,48 +611,50 @@ fn restart_job(
         health_check: job.health_check.clone(),
         health_interval_secs: job.health_interval_secs,
         health_threshold: job.health_threshold,
-    };
+    }
+}
 
-    // Remove the old crashed record under lock (with re-check to avoid
-    // deleting a freshly-spawned job with the same name).
+/// Removes record `old_id` (after re-checking no other alive job owns the
+/// name) and spawns a fresh job from `args`, carrying restart accounting.
+/// `prior_failures` of 0 resets the crash streak (operator-initiated
+/// restarts); policy restarts pass the live streak through.
+async fn swap_record(
+    old_id: &str,
+    args: RunArgs,
+    prior_restarts: u32,
+    prior_failures: u32,
+    store: &Arc<Mutex<JobStore>>,
+) -> Result<JobRecord> {
+    // Re-check under lock to avoid deleting a freshly-spawned job with the
+    // same name, and to refuse when someone else owns the name.
     {
         let mut store = store.lock().await;
-        if let Some(ref name) = job.name {
+        if let Some(ref name) = args.name {
             if let Some(existing) = store.find_by_name(name) {
-                if existing.is_alive() && existing.id != id {
-                    info!(name = %name, "restart race: job already alive with different UUID");
-                    return;
+                if existing.is_alive() && existing.id != old_id {
+                    anyhow::bail!("restart race: job {name} already alive with different UUID");
                 }
             }
         }
-        store.remove(&id);
+        store.remove(old_id);
     }
-    let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+    let _ = tokio::fs::remove_dir_all(state::job_dir(old_id)).await;
 
-    info!(id = %id, "restarting crashed job");
-    let prior_restarts = job.restart_count;
-    // Carry the failure streak across the record swap: without this every
-    // generation starts at 0, so neither exponential backoff growth nor the
-    // max-retries gate would ever engage.
-    let prior_failures = job.consecutive_failures;
-    match spawn_job(args, store.clone()).await {
-        Ok(record) => {
-            // Carry the restart count across the record swap so `status`
-            // reports lifetime restarts. Only touch a fresh (count == 0)
-            // record so a raced duplicate keeps its own count.
-            let mut store_ref = store.lock().await;
-            if let Some(j) = store_ref.get_mut(&record.id) {
-                if j.restart_count == 0 {
-                    j.restart_count = prior_restarts + 1;
-                    j.consecutive_failures = prior_failures;
-                    let _ = state::write_status(j).await;
-                }
+    let record = spawn_job(args, store.clone()).await?;
+    {
+        // Carry accounting across the record swap so `status` reports
+        // lifetime restarts. Only touch a fresh (count == 0) record so a
+        // raced duplicate keeps its own count.
+        let mut store_ref = store.lock().await;
+        if let Some(j) = store_ref.get_mut(&record.id) {
+            if j.restart_count == 0 {
+                j.restart_count = prior_restarts + 1;
+                j.consecutive_failures = prior_failures;
+                let _ = state::write_status(j).await;
             }
-            info!(id = %id, "restart succeeded");
         }
-        Err(e) => error!(id = %id, error = %e, "restart failed"),
     }
-    })
+    Ok(record)
 }
 
 /// Monitors a piped child process and calls handle_job_exit on exit.
@@ -967,6 +986,122 @@ pub async fn kill_job(id_or_name: &str, store: Arc<Mutex<JobStore>>) -> Result<(
 
     info!(id = %id, pid = %pid, "job killed");
     Ok(())
+}
+
+/// Sends SIGTERM to a process group, waits up to `grace` for the leader to
+/// exit (polling every 100ms), then escalates to SIGKILL. Tolerates
+/// already-dead processes; used by `stop`/`restart` which await termination
+/// instead of `kill`'s fire-and-forget escalation.
+async fn terminate_process_group(pid: u32, grace: Duration) {
+    let pgid = Pid::from_raw(pid as i32);
+    let _ = killpg(pgid, Signal::SIGTERM);
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        // SAFETY: kill(2) with signal 0 only probes existence; the pid
+        // comes from the kernel's own assignment and is passed by value.
+        #[allow(unsafe_code)]
+        let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+        if !alive || tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    // Final probe after the deadline before escalating.
+    #[allow(unsafe_code)]
+    let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+    if alive {
+        let _ = killpg(pgid, Signal::SIGKILL);
+    }
+}
+
+/// Gracefully stops a job: SIGTERM (escalating to SIGKILL after `timeout_ms`)
+/// if alive, then marks the job Killed.
+///
+/// Unlike `kill_job`, this also accepts terminal-state jobs: marking them
+/// Killed is an operator override that suppresses pending policy restarts
+/// (which only fire for `Crashed`/`Exited` records), so `stop` can break an
+/// `always` restart loop that `kill` cannot touch.
+pub async fn stop_job(
+    id_or_name: &str,
+    timeout_ms: u64,
+    store: Arc<Mutex<JobStore>>,
+) -> Result<()> {
+    let (pid, is_alive, id) = {
+        let store_ref = store.lock().await;
+        let actual_id = store_ref
+            .resolve_id(id_or_name)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        let job = store_ref
+            .get(&actual_id)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        (job.pid, job.is_alive(), actual_id)
+    };
+
+    if is_alive {
+        if let Some(pid) = pid {
+            terminate_process_group(pid, Duration::from_millis(timeout_ms.max(100))).await;
+        }
+    }
+
+    let job = {
+        let mut store = store.lock().await;
+        store.get_mut(&id).map(|job| {
+            if job.transition(JobState::Killed).is_err() {
+                // Already terminal: operator override, bypass the transition
+                // table so pending restarts observe Killed and stand down.
+                job.state = JobState::Killed;
+            }
+            job.clone()
+        })
+    };
+    if let Some(job) = job {
+        state::write_status(&job).await?;
+        LIFECYCLE_NOTIFY.notify_one();
+    }
+
+    info!(id = %id, "job stopped");
+    Ok(())
+}
+
+/// Stops a job (if alive) and re-spawns it from its stored definition,
+/// returning the new record. No backoff is applied; the failure streak is
+/// reset (operator-initiated fresh start) while the lifetime restart count
+/// is preserved.
+pub async fn restart_job_now(
+    id_or_name: &str,
+    timeout_ms: u64,
+    store: Arc<Mutex<JobStore>>,
+) -> Result<JobRecord> {
+    let job = {
+        let store_ref = store.lock().await;
+        let actual_id = store_ref
+            .resolve_id(id_or_name)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        store_ref
+            .get(&actual_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?
+    };
+
+    if job.is_alive() {
+        if let Some(pid) = job.pid {
+            terminate_process_group(pid, Duration::from_millis(timeout_ms.max(100))).await;
+        }
+        // Mark Killed so a concurrent policy restart stands down; the swap
+        // below re-checks name ownership under lock before removing.
+        let mut store_ref = store.lock().await;
+        if let Some(j) = store_ref.get_mut(&job.id) {
+            let _ = j.transition(JobState::Killed);
+            let _ = state::write_status(j).await;
+        }
+    }
+
+    let args = run_args_from_job(&job);
+    let restarts = job.restart_count;
+    let record =
+        swap_record(&job.id, args, restarts, 0, &store).await?;
+    info!(id = %job.id, new_id = %record.id, "job restarted");
+    Ok(record)
 }
 
 /// Kills all alive jobs. Sends SIGTERM to each process group, then SIGKILL after 3s.
@@ -1595,6 +1730,42 @@ mod tests {
             restart_trigger(&RestartPolicy::Always { backoff_ms: 500 }, &killed, false),
             None
         );
+    }
+
+    #[test]
+    fn test_run_args_from_job_roundtrip() {
+        let mut job = Job::new(
+            "id-1".into(),
+            vec!["sh".into(), "-c".into(), "sleep 30".into()],
+            Some("sleeper".into()),
+            Some("ws".into()),
+        );
+        job.readiness = Some(bgrun_proto::ReadinessStrategy::TcpPort(3000));
+        job.restart = Some(RestartPolicy::OnFailure { backoff_ms: 1500 });
+        job.max_retries = Some(3);
+        job.pty = true;
+        job.max_runtime_ms = Some(60_000);
+        job.max_rss_mb = Some(512);
+        job.env.insert("FOO".into(), "bar".into());
+        job.cwd = Some("/tmp".into());
+
+        let args = run_args_from_job(&job);
+        assert_eq!(args.cmd, job.cmd);
+        assert_eq!(args.name, job.name);
+        assert_eq!(args.workspace, job.workspace);
+        assert_eq!(args.readiness, job.readiness);
+        assert_eq!(args.restart, job.restart);
+        assert_eq!(args.max_retries, job.max_retries);
+        assert_eq!(args.pty, job.pty);
+        assert_eq!(args.max_runtime_ms, job.max_runtime_ms);
+        assert_eq!(args.max_rss_mb, job.max_rss_mb);
+        assert_eq!(args.env, job.env);
+        assert_eq!(args.cwd, job.cwd);
+        // Restart-scoped fields are always cleared for a fresh spawn.
+        assert_eq!(args.after, None);
+        assert_eq!(args.allocate_port, None);
+        assert_eq!(args.pty_cols, None);
+        assert_eq!(args.pty_rows, None);
     }
 
     #[tokio::test]

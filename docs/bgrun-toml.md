@@ -87,11 +87,10 @@ Execution order:
 
 Named jobs are idempotent: running `bgrun run --name server` when a `server` job is already alive returns the existing job record instead of spawning a duplicate. This is safe for scripts and agent loops that call `run` repeatedly.
 
-To force a restart, kill the job first:
+To restart a job from its stored definition (no need to retype the command):
 
 ```bash
-bgrun kill server
-bgrun run --name server "cargo run"
+bgrun restart server
 ```
 
 ## Config discovery

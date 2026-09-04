@@ -77,6 +77,13 @@ pub enum Command {
     Status { id: String },
     List { workspace: Option<String> },
     Kill(KillArgs),
+    /// Graceful stop: SIGTERM (escalating to SIGKILL after `timeout_ms`) if
+    /// alive; also marks terminal-state jobs Killed so pending policy
+    /// restarts are suppressed (unlike Kill, never errors on terminal jobs).
+    Stop { id: String, timeout_ms: u64 },
+    /// Stop (if alive) and re-spawn the job from its stored definition,
+    /// returning the new record. No backoff is applied.
+    Restart { id: String, timeout_ms: u64 },
     Tail(TailArgs),
     Diff {
         id: String,
