@@ -3,6 +3,7 @@ pub use bgrun_proto::paths::{job_dir, socket_path, state_dir};
 use anyhow::{Context, Result};
 use bgrun_core::Job;
 use bgrun_proto::{JobRecord, JobStatus};
+use std::os::unix::fs::PermissionsExt;
 use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 
@@ -11,16 +12,32 @@ use chrono::{DateTime, Utc};
 pub static LIFECYCLE_NOTIFY: LazyLock<tokio::sync::Notify> =
     LazyLock::new(|| tokio::sync::Notify::new());
 
+/// Atomically writes `data` to `path` with owner-only permissions.
+///
+/// Writes to a temp sibling then renames, so a crash mid-write can never
+/// leave a truncated/corrupt state file behind.
+async fn atomic_write(path: &std::path::Path, data: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, data)
+        .await
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await;
+    tokio::fs::rename(&tmp, path)
+        .await
+        .with_context(|| format!("failed to persist {}", path.display()))
+}
+
 /// Writes durable metadata for a job.
 pub async fn write_meta(job: &Job) -> Result<()> {
     let dir = job_dir(&job.id);
     tokio::fs::create_dir_all(&dir)
         .await
         .with_context(|| format!("failed to create job directory {}", dir.display()))?;
+    // Job metadata includes process env (possibly secrets): owner-only.
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let json = serde_json::to_string_pretty(&job.to_record())?;
-    tokio::fs::write(dir.join("meta.json"), json)
-        .await
-        .with_context(|| format!("failed to write metadata for job {}", job.id))
+    atomic_write(&dir.join("meta.json"), &json).await
 }
 
 /// Writes durable status for a job.
@@ -29,6 +46,7 @@ pub async fn write_status(job: &Job) -> Result<()> {
     tokio::fs::create_dir_all(&dir)
         .await
         .with_context(|| format!("failed to create job directory {}", dir.display()))?;
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let status = JobStatus {
         state: job.state.clone(),
         exit_code: job.exit_code,
@@ -38,9 +56,7 @@ pub async fn write_status(job: &Job) -> Result<()> {
         consecutive_failures: job.consecutive_failures,
     };
     let json = serde_json::to_string_pretty(&status)?;
-    tokio::fs::write(dir.join("status.json"), json)
-        .await
-        .with_context(|| format!("failed to write status for job {}", job.id))
+    atomic_write(&dir.join("status.json"), &json).await
 }
 
 /// Reads all persisted jobs from disk.
@@ -88,10 +104,17 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         };
 
         let status = match tokio::fs::read_to_string(&status_path).await {
-            Ok(status_json) => Some(
-                serde_json::from_str::<JobStatus>(&status_json)
-                    .with_context(|| format!("failed to parse {}", status_path.display()))?,
-            ),
+            Ok(status_json) => match serde_json::from_str::<JobStatus>(&status_json) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(
+                        "skipping status for {}: failed to parse status.json: {}",
+                        dir.display(),
+                        e
+                    );
+                    None
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
                 return Err(err)
@@ -99,9 +122,17 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
             }
         };
 
-        let started_at = DateTime::parse_from_rfc3339(&record.started_at)
-            .with_context(|| format!("failed to parse started_at for job {}", record.id))?
-            .with_timezone(&Utc);
+        let started_at = match DateTime::parse_from_rfc3339(&record.started_at) {
+            Ok(t) => t.with_timezone(&Utc),
+            Err(e) => {
+                tracing::warn!(
+                    "skipping job {}: failed to parse started_at: {}",
+                    record.id,
+                    e
+                );
+                continue;
+            }
+        };
         let ready_at = status
             .as_ref()
             .and_then(|s| s.ready_at.as_deref())
@@ -143,27 +174,36 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
 
     // Dedup: for named jobs, keep only the latest entry by started_at.
     // This cleans up stale duplicates left by earlier restart logic.
-    let mut best: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut stale: Vec<usize> = Vec::new();
-    for (i, job) in jobs.iter().enumerate() {
+    let mut best: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut stale_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for job in jobs.iter() {
         if let Some(ref name) = job.name {
-            if let Some(&prev) = best.get(name) {
-                if job.started_at > jobs[prev].started_at {
-                    stale.push(prev);
-                    best.insert(name.clone(), i);
-                } else {
-                    stale.push(i);
+            match best.get(name) {
+                Some(prev) => {
+                    let prev = prev.clone();
+                    if job.started_at > jobs
+                        .iter()
+                        .find(|j| j.id == *prev)
+                        .map(|j| j.started_at)
+                        .unwrap_or(job.started_at)
+                    {
+                        stale_ids.insert(prev.clone());
+                        best.insert(name.clone(), job.id.clone());
+                    } else {
+                        stale_ids.insert(job.id.clone());
+                    }
                 }
-            } else {
-                best.insert(name.clone(), i);
+                None => {
+                    best.insert(name.clone(), job.id.clone());
+                }
             }
         }
     }
-    for &i in &stale {
-        let _ = tokio::fs::remove_dir_all(job_dir(&jobs[i].id)).await;
-    }
-    for &i in stale.iter().rev() {
-        jobs.remove(i);
+    if !stale_ids.is_empty() {
+        for id in &stale_ids {
+            let _ = tokio::fs::remove_dir_all(job_dir(id)).await;
+        }
+        jobs.retain(|j| !stale_ids.contains(&j.id));
     }
 
     Ok(jobs)

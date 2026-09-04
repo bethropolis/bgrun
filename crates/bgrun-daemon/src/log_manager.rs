@@ -393,6 +393,51 @@ pub struct ExportOpts {
     pub since_ms: Option<u64>,
 }
 
+/// Guards `Command::Export` destinations against planting/symlink attacks.
+///
+/// The daemon runs with the invoking user's privileges and the socket is
+/// `0600`, so same-user export targets are a legitimate feature (the CLI
+/// resolves the destination against its own cwd). What must be blocked is
+/// writing *through* a symlink planted elsewhere, or into a file owned by
+/// a different user.
+fn ensure_export_target_allowed(out_path: &std::path::Path) -> Result<()> {
+    #[allow(unsafe_code)]
+    fn owned_by_us(meta: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        unsafe { libc::getuid() == meta.uid() }
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(out_path) {
+        if meta.file_type().is_symlink() {
+            anyhow::bail!(
+                "export path {} is a symlink; refusing to write through it",
+                out_path.display()
+            );
+        }
+        if !owned_by_us(&meta) {
+            anyhow::bail!(
+                "export path {} is owned by another user; refusing to overwrite",
+                out_path.display()
+            );
+        }
+    }
+
+    // Reject symlinked ancestors (e.g. a planted directory symlink).
+    let mut dir = out_path.parent().unwrap_or(std::path::Path::new("/"));
+    while dir != dir.parent().unwrap_or(dir) {
+        if let Ok(meta) = std::fs::symlink_metadata(dir) {
+            if meta.file_type().is_symlink() {
+                anyhow::bail!(
+                    "export parent {} is a symlink; refusing to write through it",
+                    dir.display()
+                );
+            }
+        }
+        dir = dir.parent().unwrap_or(dir);
+    }
+    Ok(())
+}
+
 /// Writes (filtered) log content to `opts.out_path`, spanning rotated files
 /// oldest-first followed by the live log. `tail`/`diff` only ever read the
 /// live file; export is the way to retrieve rotated history. Returns the
@@ -403,6 +448,8 @@ pub async fn export_logs(
     opts: &ExportOpts,
 ) -> Result<usize> {
     use tokio::io::AsyncWriteExt;
+
+    ensure_export_target_allowed(&opts.out_path)?;
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -455,10 +502,8 @@ pub async fn export_logs(
             }
             let mut text = content;
             if opts.strip_ansi {
-                text = strip_ansi_escapes::strip(text.as_bytes())
-                    .iter()
-                    .map(|&b| b as char)
-                    .collect();
+                text = String::from_utf8_lossy(&strip_ansi_escapes::strip(text.as_bytes()))
+                    .into_owned();
             }
             if opts.lines.is_some() {
                 ring.push_back(text);

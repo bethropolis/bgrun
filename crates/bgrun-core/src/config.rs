@@ -52,7 +52,11 @@ fn parse_human_size(s: &str) -> Option<u64> {
         ("g", 1024 * 1024 * 1024),
         ("b", 1u64),
     ] {
-        let i = s.len().checked_sub(suffix.len())?;
+        // Shorter inputs simply can't carry this suffix; try the next one
+        // instead of aborting the whole parse.
+        let Some(i) = s.len().checked_sub(suffix.len()) else {
+            continue;
+        };
         if s.get(i..).is_some_and(|t| t.eq_ignore_ascii_case(suffix)) {
             return s[..i].trim().parse::<u64>().ok()?.checked_mul(mult);
         }

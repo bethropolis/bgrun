@@ -41,7 +41,7 @@ pub async fn readopt_all(
             None => continue,
         };
 
-        let alive = is_process_alive(pid);
+        let alive = is_process_alive(pid) && pid_matches_cmdline(pid, &job.cmd);
 
         if alive {
             info!(
@@ -56,7 +56,7 @@ pub async fn readopt_all(
             info!(
                 id = %job.id,
                 pid = pid,
-                "job dead on restart, marking crashed"
+                "job dead on restart (or PID recycled by an unrelated process), marking crashed"
             );
             let mut dead_job = job;
             dead_job.state = JobState::Crashed;
@@ -132,6 +132,42 @@ fn is_process_alive(pid: u32) -> bool {
     // memory-safety concern exists.
     #[allow(unsafe_code)]
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Verifies the process at `pid` looks like the job's command.
+///
+/// After a reboot or long downtime a dead job's PID may be reassigned to an
+/// unrelated process; kill(pid, 0) alone would happily adopt it and later
+/// SIGTERM it. Reading /proc/<pid>/cmdline lets us reject PIDs that belong
+/// to a different program. A live process with an unreadable/mismatching
+/// cmdline is treated as not ours.
+fn pid_matches_cmdline(pid: u32, cmd: &[String]) -> bool {
+    let Some(argv) = process_cmdline(pid) else {
+        return false;
+    };
+    if cmd.is_empty() || argv.is_empty() {
+        return false;
+    }
+    // The spawned program's first token must appear in the process argv
+    // (spawned via shell, it appears inside the -c argument).
+    let first = &cmd[0];
+    if argv.iter().any(|a| a == first) {
+        return true;
+    }
+    // Fallback: the full command line joined must appear in the argv joined.
+    let job = cmd.join(" ");
+    argv.join(" ").contains(&job)
+}
+
+/// Reads /proc/<pid>/cmdline as a list of arguments (None if unreadable).
+fn process_cmdline(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        raw.split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Finds the job ID for a given PID in the store.
