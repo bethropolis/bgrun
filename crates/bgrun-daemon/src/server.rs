@@ -702,27 +702,23 @@ async fn dispatch(
             let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
             match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream.as_deref(), None, regex_ref.as_ref()).await {
                 Ok((mut log_lines, new_cursor)) => {
-                    // Truncate to last N lines if requested; only advance
-                    // cursor by the number of lines actually returned so
-                    // subsequent calls resume from where we left off.
-                    let actual_new = if let Some(max_lines) = lines {
+                    // `new_cursor` is the byte-offset cursor returned by
+                    // diff_since. We always store it verbatim, so the next
+                    // diff resumes exactly where the log was read. The `--lines`
+                    // limit only truncates the displayed list here — it must not
+                    // influence the cursor advance (mixing a byte offset with a
+                    // line count permanently corrupts the cursor).
+                    if let Some(max_lines) = lines {
                         if log_lines.len() > max_lines {
-                            let keep = log_lines.split_off(log_lines.len() - max_lines);
-                            let count = keep.len() as u64;
-                            log_lines = keep;
-                            cursor + count
-                        } else {
-                            new_cursor
+                            log_lines = log_lines.split_off(log_lines.len() - max_lines);
                         }
-                    } else {
-                        new_cursor
-                    };
+                    }
 
                     // Update cursor in store and persist
                     {
                         let mut store_ref = store.lock().await;
                         if let Some(job) = store_ref.get_mut(&job_id) {
-                            job.last_diff_cursor = actual_new;
+                            job.last_diff_cursor = new_cursor;
                         }
                     }
                     // Persist updated status
@@ -741,7 +737,7 @@ async fn dispatch(
                     }
                     let result = serde_json::json!({
                         "lines": log_lines,
-                        "cursor": actual_new,
+                        "cursor": new_cursor,
                     });
                     match serde_json::to_value(result) {
                         Ok(val) => Response::ok(req_id.clone(), val),

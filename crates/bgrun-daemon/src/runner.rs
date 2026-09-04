@@ -221,8 +221,23 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         if let Some(ref name) = job_name {
             if let Some(existing) = store.find_by_name(name) {
                 if existing.is_alive() && existing.id != id {
-                    info!(name = %name, id = %existing.id, "dual-spawn race: returning existing");
-                    return Ok(existing.to_record());
+                    // Clone the existing record (and its id for logging) before
+                    // dropping the store lock, then terminate the process we
+                    // just spawned so it does not leak as an orphan (the old
+                    // code returned the existing job but never killed the fresh
+                    // child).
+                    let dup = existing.to_record();
+                    let existing_id = existing.id.clone();
+                    drop(store);
+                    info!(name = %name, id = %existing_id, "dual-spawn race: killing duplicate and returning existing");
+                    let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                    let _ = child.kill().await;
+                    let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+                    // Drop global handles registered for the orphaned job.
+                    STDIN_HANDLES.lock().await.remove(&id);
+                    LOG_WRITE_LOCKS.lock().await.remove(&id);
+                    SCREEN_BUFFERS.lock().await.remove(&id);
+                    return Ok(dup);
                 }
             }
         }
@@ -385,83 +400,115 @@ async fn handle_job_exit(
         info!(id = %id, state = %job.state.to_string(), "job exited");
     }
 
-    // Exponential backoff restart for crashed jobs with OnCrash policy
-    if let Some(ref job) = job {
-        if job.state == JobState::Crashed {
-            let restart_policy = job.restart.clone();
-            if let Some(RestartPolicy::OnCrash { backoff_ms }) = restart_policy {
-                let backoff_ms = backoff_ms.max(1_000); // floor at 1s
-                let consecutive = job.consecutive_failures;
-                let running_10s = (chrono::Utc::now() - job.started_at)
-                    > chrono::Duration::seconds(10);
-
-                // Reset counter if the job ran for more than 10s
-                if running_10s {
-                    {
-                        let mut store = store.lock().await;
-                        if let Some(j) = store.get_mut(&id) {
-                            j.consecutive_failures = 0;
-                        }
-                    }
-                    // Only actually restart with base backoff after a longer run
-                    let store_clone = store.clone();
-                    let job_id = id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let rt = tokio::runtime::Handle::current();
-                        rt.block_on(async {
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            restart_job(job_id, store_clone).await;
-                        });
-                    });
-                } else {
-                    // Exponential backoff: base * 2^consecutive + jitter
-                    let exponent = 1u64 << consecutive.min(8); // cap exponent at 256x
-                    let delay_ms = backoff_ms.saturating_mul(exponent);
-                    let delay_ms = delay_ms.min(300_000); // cap at 5 min
-                    // Simple jitter: 0–1000ms based on nanosecond timestamp bits
-                    let jitter_ms = (std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .subsec_nanos()
-                        % 1000) as u64;
-                    let total_ms = delay_ms + jitter_ms;
-
-                    // Increment consecutive_failures
-                    {
-                        let mut store = store.lock().await;
-                        if let Some(j) = store.get_mut(&id) {
-                            j.consecutive_failures = consecutive + 1;
-                        }
-                    }
-
-                    info!(
-                        id = %id,
-                        backoff_ms = %total_ms,
-                        consecutive = %consecutive,
-                        "scheduled restart after crash"
-                    );
-
-                    let store_clone = store.clone();
-                    let job_id = id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let rt = tokio::runtime::Handle::current();
-                        rt.block_on(async {
-                            sleep(Duration::from_millis(total_ms)).await;
-                            restart_job(job_id, store_clone).await;
-                        });
-                    });
-                }
-            }
+    // Schedule an OnCrash restart if configured. Shared with the orphan
+    // re-adoption path so a re-adopted job that later crashes still honors
+    // its restart policy (previously it was silently dropped).
+    if let Some(job_ref) = &job {
+        if job_ref.state == JobState::Crashed {
+            schedule_restart_after_crash(id, store.clone()).await;
         }
     }
 
     LIFECYCLE_NOTIFY.notify_one();
 }
 
+/// If `id` refers to a job in the Crashed state with an OnCrash policy,
+/// schedules its re-spawn after the appropriate exponential backoff. Shared by
+/// `handle_job_exit` and the orphan re-adoption path so behavior is identical.
+async fn schedule_restart_after_crash(id: String, store: Arc<Mutex<JobStore>>) {
+    // Resolve the job once into an owned clone to compute the backoff.
+    let job = {
+        let store_ref = store.lock().await;
+        store_ref.get(&id).cloned()
+    };
+    let Some(job) = job else { return };
+    if job.state != JobState::Crashed {
+        return;
+    }
+    let Some(RestartPolicy::OnCrash { backoff_ms }) = job.restart.clone() else {
+        return;
+    };
+
+    let backoff_ms = backoff_ms.max(1_000); // floor at 1s
+    let running_10s =
+        (chrono::Utc::now() - job.started_at) > chrono::Duration::seconds(10);
+
+    // Reset counter if the job ran for more than 10s
+    if running_10s {
+        {
+            let mut store_ref = store.lock().await;
+            if let Some(j) = store_ref.get_mut(&id) {
+                j.consecutive_failures = 0;
+            }
+        }
+        // Sleep asynchronously (non-blocking) so we never park a Tokio
+        // blocking-pool thread for the whole backoff delay, then respawn.
+        let store_clone = store.clone();
+        let job_id = id.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(backoff_ms)).await;
+            restart_job(job_id, store_clone).await;
+        });
+    } else {
+        let consecutive = job.consecutive_failures;
+        // Exponential backoff: base * 2^consecutive + jitter
+        let exponent = 1u64 << consecutive.min(8); // cap exponent at 256x
+        let delay_ms = backoff_ms.saturating_mul(exponent).min(300_000); // cap at 5 min
+        // Simple jitter: 0–1000ms based on nanosecond timestamp bits
+        let jitter_ms = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+            % 1000) as u64;
+        let total_ms = delay_ms + jitter_ms;
+
+        // Increment consecutive_failures
+        {
+            let mut store_ref = store.lock().await;
+            if let Some(j) = store_ref.get_mut(&id) {
+                j.consecutive_failures = consecutive + 1;
+            }
+        }
+
+        info!(
+            id = %id,
+            backoff_ms = %total_ms,
+            consecutive = %consecutive,
+            "scheduled restart after crash"
+        );
+
+        let store_clone = store.clone();
+        let job_id = id.clone();
+        // Sleep asynchronously (non-blocking), then respawn — the long backoff
+        // must not hog a blocking-pool thread.
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(total_ms)).await;
+            restart_job(job_id, store_clone).await;
+        });
+    }
+}
+
+/// Entry point used by orphan re-adoption: after the orphan monitor has
+/// marked a re-adopted job as Crashed, this schedules its OnCrash restart —
+/// the same policy honored for normally-spawned jobs.
+pub async fn handle_adopted_job_crash(id: String, store: Arc<Mutex<JobStore>>) {
+    schedule_restart_after_crash(id, store).await;
+}
+
 /// Re-spawns a job that previously crashed, using the stored Job data
 /// to reconstruct RunArgs. Removes the old crashed record first so
 /// named jobs never accumulate stale entries.
-async fn restart_job(id: String, store: Arc<Mutex<JobStore>>) {
+///
+/// Returns a boxed future rather than an `async fn` future: `restart_job`
+/// recursively spawns `spawn_job`, whose future would otherwise create an
+/// async-fn Send type cycle (`spawn_job -> monitor_job -> handle_job_exit ->
+/// schedule -> restart_job -> spawn_job`) when awaited inside a `tokio::spawn`
+/// restart task. Boxing makes `Send` a trait object that terminates the cycle.
+fn restart_job(
+    id: String,
+    store: Arc<Mutex<JobStore>>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+    Box::pin(async move {
     let job = {
         let store_ref = store.lock().await;
         store_ref.get(&id).cloned()
@@ -530,6 +577,7 @@ async fn restart_job(id: String, store: Arc<Mutex<JobStore>>) {
         Ok(_) => info!(id = %id, "restart succeeded"),
         Err(e) => error!(id = %id, error = %e, "restart failed"),
     }
+    })
 }
 
 /// Monitors a piped child process and calls handle_job_exit on exit.
@@ -650,7 +698,7 @@ async fn spawn_pty_job(
         None
     };
 
-    let child = slave
+    let mut child = slave
         .spawn_command(cmd_builder)
         .context("failed to spawn process in PTY")?;
     let pid = child
@@ -716,8 +764,20 @@ async fn spawn_pty_job(
         if let Some(ref name) = job_name {
             if let Some(existing) = store.find_by_name(name) {
                 if existing.is_alive() && existing.id != id {
-                    info!(name = %name, id = %existing.id, "dual-spawn race: returning existing");
-                    return Ok(existing.to_record());
+                    // Clone the existing record (and its id for logging) before
+                    // dropping the store lock, then terminate the orphaned PTY
+                    // process and remove its handles so nothing leaks.
+                    let dup = existing.to_record();
+                    let existing_id = existing.id.clone();
+                    drop(store);
+                    info!(name = %name, id = %existing_id, "dual-spawn race (pty): killing duplicate and returning existing");
+                    let _ = child.kill();
+                    let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+                    PTY_WRITERS.lock().await.remove(&id);
+                    PTY_PAIRS.lock().await.remove(&id);
+                    JOB_BROADCASTS.lock().await.remove(&id);
+                    SCREEN_BUFFERS.lock().await.remove(&id);
+                    return Ok(dup);
                 }
             }
         }

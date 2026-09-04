@@ -9,12 +9,24 @@ use tracing::info;
 use crate::state::LIFECYCLE_NOTIFY;
 use crate::state;
 
+/// Callback invoked by the orphan monitor when a re-adopted job has crashed,
+/// so the daemon can honor its OnCrash restart policy (previously ignored for
+/// adopted jobs). The daemon binary implements this because it owns the
+/// process-spawn/restart logic; the library crate only reports the event.
+pub type AdoptedCrashHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+
 /// Re-adopts previously running jobs from disk.
 ///
 /// For each persisted job in Running/Ready state:
 /// - If the PID is still alive: insert into store, schedule monitoring
 /// - If dead: mark as Crashed
-pub async fn readopt_all(store: Arc<Mutex<JobStore>>) -> Result<()> {
+///
+/// `on_crash` is invoked with the job id whenever an adopted job is observed
+/// to have crashed while being monitored, so its restart policy is honored.
+pub async fn readopt_all(
+    store: Arc<Mutex<JobStore>>,
+    on_crash: AdoptedCrashHandler,
+) -> Result<()> {
     let jobs = state::read_all_jobs().await?;
     let mut adopted = Vec::new();
     let mut crashed = 0;
@@ -61,32 +73,50 @@ pub async fn readopt_all(store: Arc<Mutex<JobStore>>) -> Result<()> {
     // Spawn background monitor for re-adopted jobs
     for (id, pid) in adopted {
         let store_clone = store.clone();
+        let on_crash = on_crash.clone();
         tokio::spawn(async move {
-            poll_adopted_job(id, pid, store_clone).await;
+            poll_adopted_job(id, pid, store_clone, on_crash).await;
         });
     }
 
     Ok(())
 }
 
-/// Polls a re-adopted job every 2 seconds, transitioning to Crashed if it dies.
-async fn poll_adopted_job(id: String, pid: u32, store: Arc<Mutex<JobStore>>) {
+/// Polls a re-adopted job every 2 seconds, transitioning to Crashed if it dies
+/// and reporting the crash so its OnCrash restart policy is honored.
+async fn poll_adopted_job(
+    id: String,
+    pid: u32,
+    store: Arc<Mutex<JobStore>>,
+    on_crash: AdoptedCrashHandler,
+) {
     info!(id = %id, pid = pid, "started orphan monitor");
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         if !is_process_alive(pid) {
             info!(id = %id, pid = pid, "re-adopted process died");
-            let mut store_ref = store.lock().await;
-            if let Some(job) = store_ref.get_mut(&id) {
-                if job.is_alive() {
-                    job.exit_code = Some(-1);
-                    let _ = job.transition(JobState::Crashed);
-                    let _ = state::write_status(job).await;
-
-                    // Notify the reactive shutdown loop to check active task count
-                    LIFECYCLE_NOTIFY.notify_one();
+            let crashed = {
+                let mut store_ref = store.lock().await;
+                if let Some(job) = store_ref.get_mut(&id) {
+                    if job.is_alive() {
+                        job.exit_code = Some(-1);
+                        let _ = job.transition(JobState::Crashed);
+                        let _ = state::write_status(job).await;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
                 }
+            };
+            // Notify the reactive shutdown loop to check active task count.
+            // (do not hold the store lock while invoking the restart handler)
+            LIFECYCLE_NOTIFY.notify_one();
+
+            if crashed {
+                on_crash(id.clone());
             }
             return;
         }

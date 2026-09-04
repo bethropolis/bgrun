@@ -39,8 +39,19 @@ async fn main() -> Result<()> {
     }
     let store = Arc::new(Mutex::new(initial_store));
 
-    // Re-adopt orphaned jobs from previous daemon instance
-    if let Err(e) = bgrun_daemon::orphan::readopt_all(store.clone()).await {
+    // Re-adopt orphaned jobs from a previous daemon instance. If an adopted
+    // job later crashes, route it back through the restart logic so its OnCrash
+    // policy is honored (previously adopted jobs never got restarted).
+    let on_adopted_crash: bgrun_daemon::orphan::AdoptedCrashHandler = {
+        let store = store.clone();
+        std::sync::Arc::new(move |id: String| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                crate::runner::handle_adopted_job_crash(id, store).await;
+            });
+        })
+    };
+    if let Err(e) = bgrun_daemon::orphan::readopt_all(store.clone(), on_adopted_crash).await {
         tracing::warn!(error = %e, "orphan re-adoption failed");
     }
 
@@ -120,6 +131,11 @@ async fn main() -> Result<()> {
                                         "idle timeout reached reactively, initiating graceful auto-shutdown"
                                     );
                                     let _ = tokio::fs::remove_file(&socket_path_clone).await;
+                                    // Leave no stale runtime artifacts behind.
+                                    let _ = tokio::fs::remove_file(
+                                        state::state_dir().join("daemon.pid"),
+                                    )
+                                    .await;
                                     std::process::exit(0);
                                 }
                             }
@@ -142,6 +158,7 @@ async fn main() -> Result<()> {
     tracing::info!("server stopped, cleaning up jobs");
     runner::kill_all_jobs(store).await;
     let _ = tokio::fs::remove_file(&socket_path).await;
+    let _ = tokio::fs::remove_file(daemon_dir.join("daemon.pid")).await;
     tracing::info!("daemon shut down complete");
     Ok(())
 }
