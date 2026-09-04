@@ -11,6 +11,61 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+# version_ge HAVE NEED — true if HAVE >= NEED (numeric, dot-separated)
+version_ge() {
+  local IFS=.
+  local -a have need
+  read -ra have <<< "$1"
+  read -ra need <<< "$2"
+  local i h n
+  for ((i = 0; i < ${#need[@]}; i++)); do
+    h="${have[i]:-0}"
+    n="${need[i]:-0}"
+    h="${h%%[^0-9]*}"
+    n="${n%%[^0-9]*}"
+    if ((10#$h > 10#$n)); then return 0; fi
+    if ((10#$h < 10#$n)); then return 1; fi
+  done
+  return 0
+}
+
+# The repo pins a toolchain via rust-toolchain.toml. If that exact toolchain
+# is broken or missing locally, fall back to any installed toolchain >= MSRV.
+# NOTE: probe with `rustc`, not `cargo --version` — cargo prints its own
+# version without ever invoking rustc, so it passes even on a broken toolchain.
+ensure_working_toolchain() {
+  if rustc --version >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v rustup >/dev/null 2>&1; then
+    echo "cargo is not working and rustup is unavailable; reinstall Rust from https://rustup.rs/"
+    exit 1
+  fi
+  local msrv
+  msrv="$(sed -n 's/^rust-version *= *"//p' Cargo.toml 2>/dev/null | head -n1 | cut -d'"' -f1 || true)"
+  [[ -z "$msrv" ]] && msrv="1.90"
+  echo "Pinned toolchain unavailable; looking for any installed toolchain >= ${msrv}..."
+  local best_toolchain="" best_version="0.0" name ver
+  while IFS= read -r line; do
+    name="${line%% *}"
+    [[ -z "$name" ]] && continue
+    # NOTE: `|| true` — a broken toolchain makes this pipeline fail, and
+    # `set -e`/`pipefail` would otherwise kill the whole installer here.
+    ver="$(rustup run "$name" rustc --version 2>/dev/null | awk '{print $2}' || true)"
+    [[ -z "$ver" ]] && continue
+    if version_ge "$ver" "$msrv" && version_ge "$ver" "$best_version"; then
+      best_version="$ver"
+      best_toolchain="$name"
+    fi
+  done < <(rustup toolchain list 2>/dev/null)
+  if [[ -z "$best_toolchain" ]]; then
+    echo "No working Rust toolchain >= ${msrv} found. Try: rustup toolchain install stable"
+    exit 1
+  fi
+  echo "Using toolchain ${best_toolchain} (rustc ${best_version})"
+  export RUSTUP_TOOLCHAIN="$best_toolchain"
+}
+
 install_skill=false
 print_skill=false
 
@@ -92,6 +147,7 @@ echo
 echo
 
 echo "==> Building bgrun (release)..."
+ensure_working_toolchain
 cargo build --release -p bgrun-cli -p bgrun-daemon
 
 install_dir="${HOME}/.local/bin"
