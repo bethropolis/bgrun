@@ -144,6 +144,7 @@ async fn job_menu(record: JobRecord) -> Result<()> {
             "Tail logs",
             "Screen buffer (non-blocking peek)",
             "Diff (only new lines)",
+            "Export logs to file",
             "Send stdin",
             "Wait until ready",
             "Expect log pattern",
@@ -172,6 +173,24 @@ async fn job_menu(record: JobRecord) -> Result<()> {
             }
             "Diff (only new lines)" => {
                 let _ = crate::commands::diff::diff(id.clone(), None, None, false, None, false).await;
+            }
+            "Export logs to file" => {
+                let file = prompt_optional(
+                    "Destination file (blank for ./bgrun-<id>.log):",
+                    "Relative paths resolve against your cwd",
+                )?;
+                let _ = crate::commands::export::export(
+                    id.clone(),
+                    file,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
+                    false,
+                )
+                .await;
             }
             "Send stdin" => send_flow(&id).await?,
             "Wait until ready" => wait_flow(&id).await?,
@@ -383,6 +402,8 @@ async fn start_job_flow(workspace: Option<String>) -> Result<()> {
         restart: None,
         backoff: None,
         max_retries: None,
+        log_max_size: None,
+        log_keep: None,
         pty_cols: None,
         pty_rows: None,
         max_rss_mb: None,

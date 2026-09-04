@@ -21,6 +21,45 @@ pub enum TomlCmd {
     Array(Vec<String>),
 }
 
+/// Supports either raw bytes or a human size (`"50M"`, `"1G"`) for
+/// `log-max-size`.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum TomlSize {
+    Bytes(u64),
+    Human(String),
+}
+
+impl TomlSize {
+    fn bytes(&self) -> Result<u64, Error> {
+        match self {
+            TomlSize::Bytes(n) => Ok(*n),
+            TomlSize::Human(s) => parse_human_size(s)
+                .ok_or_else(|| Error::ParseError(format!("invalid size: {s:?}"))),
+        }
+    }
+}
+
+/// Parses `512`, `1k`, `50M`, `2G` (case-insensitive, optional `b`) into bytes.
+fn parse_human_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    for (suffix, mult) in [
+        ("kb", 1024u64),
+        ("mb", 1024 * 1024),
+        ("gb", 1024 * 1024 * 1024),
+        ("k", 1024u64),
+        ("m", 1024 * 1024),
+        ("g", 1024 * 1024 * 1024),
+        ("b", 1u64),
+    ] {
+        let i = s.len().checked_sub(suffix.len())?;
+        if s.get(i..).is_some_and(|t| t.eq_ignore_ascii_case(suffix)) {
+            return s[..i].trim().parse::<u64>().ok()?.checked_mul(mult);
+        }
+    }
+    s.parse::<u64>().ok()
+}
+
 /// Configuration for a single named job.
 #[derive(Deserialize, Debug, Clone)]
 pub struct JobConfig {
@@ -38,6 +77,10 @@ pub struct JobConfig {
     pub restart: Option<String>,
     #[serde(rename = "max-retries")]
     pub max_retries: Option<u32>,
+    #[serde(rename = "log-max-size")]
+    pub log_max_size: Option<TomlSize>,
+    #[serde(rename = "log-keep")]
+    pub log_keep: Option<u32>,
     pub workspace: Option<String>,
     pub after: Option<String>,
     pub pty: Option<bool>,
@@ -141,6 +184,17 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         .map(|u| ReadinessStrategy::HttpPoll(u.clone()))
         .or_else(|| job.health_check_port.map(ReadinessStrategy::TcpPort));
 
+    let log_max_size = job
+        .log_max_size
+        .as_ref()
+        .map(TomlSize::bytes)
+        .transpose()?;
+    if job.log_keep == Some(0) {
+        return Err(Error::ParseError(format!(
+            "job '{name}': log-keep must be at least 1"
+        )));
+    }
+
     Ok(RunArgs {
         cmd,
         name: Some(name.into()),
@@ -148,6 +202,8 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         readiness,
         restart,
         max_retries: job.max_retries,
+        log_max_size,
+        log_keep: job.log_keep,
         pty: job.pty.unwrap_or(false),
         max_runtime_ms: job.max_runtime_ms,
         max_rss_mb: job.max_rss_mb,
@@ -274,6 +330,39 @@ backoff-ms = 500
         assert_eq!(b.max_retries, Some(3));
         let c = resolve_job_args("c", &config).unwrap();
         assert_eq!(c.restart, Some(RestartPolicy::Always { backoff_ms: 500 }));
+    }
+
+    #[test]
+    fn test_resolve_log_rotation() {
+        let toml = r#"
+[jobs.a]
+cmd = "true"
+log-max-size = "10M"
+log-keep = 3
+
+[jobs.b]
+cmd = "true"
+log-max-size = 4096
+"#;
+        let config = parse_config(toml).unwrap();
+        let a = resolve_job_args("a", &config).unwrap();
+        assert_eq!(a.log_max_size, Some(10 * 1024 * 1024));
+        assert_eq!(a.log_keep, Some(3));
+        let b = resolve_job_args("b", &config).unwrap();
+        assert_eq!(b.log_max_size, Some(4096));
+        assert_eq!(b.log_keep, None);
+    }
+
+    #[test]
+    fn test_invalid_log_size_errors() {
+        let toml = r#"
+[jobs.bad]
+cmd = "true"
+log-max-size = "10x"
+"#;
+        let config = parse_config(toml).unwrap();
+        let err = resolve_job_args("bad", &config).unwrap_err();
+        assert!(matches!(err, Error::ParseError(_)));
     }
 
     #[test]

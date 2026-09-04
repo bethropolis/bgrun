@@ -30,6 +30,8 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--restart <POLICY>` | Restart policy: `never`, `on-crash` (non-zero exit / signal death), `on-failure` (also clean exits that never became `Ready`), `always` (any exit except an explicit kill). An explicit `kill` always wins. |
 | `--backoff <DURATION>` | Base delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`). Doubles per consecutive failure, capped at 5 min. |
 | `--max-retries <N>` | Give up after N consecutive restart attempts (docker-style max-retries; `0` = never restart). Counter resets after a healthy run (>10s). Unset = retry forever. |
+| `--log-max-size <SIZE>` | Rotate `stdout.log` past this size (e.g. `10M`, `1G`, default `50M`) |
+| `--log-keep <N>` | Retain N rotated files (`stdout.log.1`…; default 1, minimum 1) |
 | `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
 | `--max-runtime <D>` | Kill the job after this duration (e.g. `30s`, `5m`) |
 | `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |
@@ -393,6 +395,33 @@ bgrun restart <ID> [--timeout <DURATION>]
 bgrun restart server
 bgrun restart abc123 --timeout 5s
 ```
+
+---
+
+## export
+
+Write a job's log history to a file — spanning rotated generations oldest-first (unlike `tail`/`diff`, which read only the live log).
+
+```
+bgrun export [<ID>] [--name <NAME>] [--file <PATH>] [--lines N] [--level L] [--stream S] [--strip-ansi] [--filter-regex <RE>] [--since <D>]
+```
+
+| Flag | Description |
+|---|---|
+| `--file <PATH>` | Destination (default: `./bgrun-<id>.log`). Relative paths resolve against your cwd |
+| `--lines <N>` | Export only the last N matching lines (default: all) |
+| `--level <L>` | Keep lines containing this substring (case-insensitive, e.g. `error`) |
+| `--stream <S>` | Keep one stream: `stdout`, `stderr`, or `pty` |
+| `--strip-ansi` | Strip ANSI escape codes |
+| `--filter-regex <RE>` | Keep lines matching this regex (invalid patterns are an error) |
+| `--since <D>` | Only entries from the recent past (e.g. `30m`, `2h`). Lines without a parseable timestamp are kept |
+
+```bash
+bgrun export server --file ./server.log --level error --since 1h
+bgrun export abc123 --lines 200 --strip-ansi
+```
+
+**Output** (JSON): `{"path":"/abs/path/server.log","lines":142}`
 
 ---
 

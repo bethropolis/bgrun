@@ -40,6 +40,8 @@ restart = "on-crash"
 | `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
 | `restart` | string | One of `"never"`, `"on-crash"` (non-zero exit / signal death), `"on-failure"` (also clean exits that never became `Ready`), `"always"` (any exit except an explicit kill). Unknown values are an error. |
 | `max-retries` | integer | Give up after this many consecutive restart attempts (counter resets after a healthy run >10s). Unset = retry forever. |
+| `log-max-size` | integer or string | Rotate the log past this size: bytes (`52428800`) or human (`"50M"`, `"1G"`). Default 50MB. |
+| `log-keep` | integer | Retain this many rotated files (minimum 1, default 1). |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
 | `pty` | bool | Allocate a pseudo-terminal for the child process. |

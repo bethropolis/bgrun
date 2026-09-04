@@ -7,7 +7,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen schema clean skill help"
+    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -15,7 +15,7 @@ _bgrun()
     fi
 
     case "${words[1]}" in
-        status|kill|wait|tail|diff|send|stats|expect|attach|screen)
+        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen|export)
             local ids
             ids=$(bgrun completions --active-ids 2>/dev/null | awk '{print $1}')
             COMPREPLY=($(compgen -W "$ids" -- "$cur"))
@@ -33,11 +33,15 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         stop|restart)
             COMPREPLY=($(compgen -W "--timeout" -- "$cur"))
+            ;;
+        export)
+            local opts="--file --lines --level --stream --strip-ansi --filter-regex --since"
+            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         clean)
             local opts="--workspace --force"

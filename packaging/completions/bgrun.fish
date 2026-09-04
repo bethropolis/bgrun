@@ -19,13 +19,14 @@ complete -c bgrun -n "__fish_use_subcommand" -a "stats" -d "Show resource stats 
 complete -c bgrun -n "__fish_use_subcommand" -a "expect" -d "Wait for a pattern in a job's log output"
 complete -c bgrun -n "__fish_use_subcommand" -a "attach" -d "Attach to a PTY job's interactive terminal"
 complete -c bgrun -n "__fish_use_subcommand" -a "screen" -d "Show last N lines from in-memory buffer"
+complete -c bgrun -n "__fish_use_subcommand" -a "export" -d "Export log history to a file"
 complete -c bgrun -n "__fish_use_subcommand" -a "schema" -d "Print JSON Schema for a command's arguments"
 complete -c bgrun -n "__fish_use_subcommand" -a "clean" -d "Remove all terminated jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skills"
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID
-complete -c bgrun -n "__fish_seen_subcommand_from status kill stop restart wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
+complete -c bgrun -n "__fish_seen_subcommand_from status kill stop restart wait tail diff send stats attach expect screen export" -a "(bgrun completions --active-ids)"
 
 # Dynamic workspaces for list, kill, and clean
 complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
@@ -44,6 +45,8 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l pty -d "Allocate a PTY
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l restart -d "Restart policy (never/on-crash/on-failure/always)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l backoff -d "Backoff duration"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-retries -d "Max consecutive restart attempts"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l log-max-size -d "Rotate log past this size"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l log-keep -d "Rotated log files to retain"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cols -d "PTY columns"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l rows -d "PTY rows"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-rss -d "Max RSS in MB"
@@ -94,6 +97,15 @@ complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspa
 
 # Stop / restart flags
 complete -c bgrun -n "__fish_seen_subcommand_from stop restart" -l timeout -d "Grace period before SIGKILL"
+
+# Export flags
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l file -d "Destination file"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l lines -d "Last N matching lines"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l level -d "Filter by level"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l stream -d "Filter by stream"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l strip-ansi -d "Strip ANSI escapes"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l filter-regex -d "Filter by regex"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l since -d "Only recent entries (e.g. 30m)"
 
 # Global flags
 complete -c bgrun -l json -d "Output in JSON format"

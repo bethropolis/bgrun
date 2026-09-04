@@ -141,6 +141,8 @@ async fn test_proto_serialization_roundtrip() {
         readiness: Some(bgrun_proto::ReadinessStrategy::TcpPort(3000)),
         restart: Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms: 1000 }),
         max_retries: Some(3),
+        log_max_size: Some(1024),
+        log_keep: Some(2),
         pty: true,
         max_runtime_ms: Some(600_000),
         max_rss_mb: None,

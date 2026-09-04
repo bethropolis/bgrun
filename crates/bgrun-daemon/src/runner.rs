@@ -180,20 +180,26 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         STDIN_HANDLES.lock().await.insert(id.clone(), stdin);
     }
 
+    // Per-job log rotation settings, shared by both capture tasks.
+    let rotation = bgrun_daemon::log_manager::RotationConfig::from_job(
+        args.log_max_size,
+        args.log_keep,
+    );
+
     // Spawn async task to capture stdout/stderr to log file with rotation
     let stdout_log = job_dir.join("stdout.log");
     if let Some(stdout) = child.stdout.take() {
         let log_path = stdout_log.clone();
         let id_clone = id.clone();
         tokio::spawn(async move {
-            capture_output(stdout, log_path, &id_clone, "stdout").await;
+            capture_output(stdout, log_path, &id_clone, "stdout", rotation).await;
         });
     }
     if let Some(stderr) = child.stderr.take() {
         let log_path = stdout_log;
         let id_clone = id.clone();
         tokio::spawn(async move {
-            capture_output(stderr, log_path, &id_clone, "stderr").await;
+            capture_output(stderr, log_path, &id_clone, "stderr", rotation).await;
         });
     }
 
@@ -205,6 +211,8 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     job.readiness = args.readiness.clone();
     job.restart = args.restart.clone();
     job.max_retries = args.max_retries;
+    job.log_max_size = args.log_max_size;
+    job.log_keep = args.log_keep;
     job.pty = args.pty;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -599,6 +607,8 @@ fn run_args_from_job(job: &Job) -> RunArgs {
         readiness: job.readiness.clone(),
         restart: job.restart.clone(),
         max_retries: job.max_retries,
+        log_max_size: job.log_max_size,
+        log_keep: job.log_keep,
         pty: job.pty,
         max_runtime_ms: job.max_runtime_ms,
         env: job.env.clone(),
@@ -809,12 +819,17 @@ async fn spawn_pty_job(
         .await
         .insert(id.clone(), tx.clone());
 
+    let rotation = bgrun_daemon::log_manager::RotationConfig::from_job(
+        args.log_max_size,
+        args.log_keep,
+    );
+
     // Spawn blocking task to capture PTY output (sync reads on PTY master)
     // Broadcast sender is passed through so raw bytes reach attached clients
     let log_path = job_dir.join("stdout.log");
     let id_clone = id.clone();
     tokio::task::spawn_blocking(move || {
-        capture_pty_output(reader, &log_path, &id_clone, tx);
+        capture_pty_output(reader, &log_path, &id_clone, tx, rotation);
     });
 
     // Create Job record
@@ -825,6 +840,8 @@ async fn spawn_pty_job(
     job.readiness = args.readiness.clone();
     job.restart = args.restart.clone();
     job.max_retries = args.max_retries;
+    job.log_max_size = args.log_max_size;
+    job.log_keep = args.log_keep;
     job.pty = true;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -1354,6 +1371,7 @@ async fn capture_output(
     log_path: std::path::PathBuf,
     id: &str,
     label: &str,
+    rotation: bgrun_daemon::log_manager::RotationConfig,
 ) {
     use tokio::io::AsyncReadExt;
 
@@ -1396,8 +1414,11 @@ async fn capture_output(
                 }
                 // Check for rotation (only once per chunk)
                 if let Ok(meta) = tokio::fs::metadata(&log_path).await {
-                    if meta.len() > 50 * 1024 * 1024 {
-                        let _ = bgrun_daemon::log_manager::rotate_if_needed(id).await;
+                    if meta.len() > rotation.max_bytes
+                        && let Ok(rotated) =
+                            bgrun_daemon::log_manager::rotate_if_needed(id, &rotation).await
+                        && rotated
+                    {
                         if let Ok(new_file) = tokio::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
@@ -1563,8 +1584,17 @@ fn capture_pty_output(
     log_path: &std::path::Path,
     id: &str,
     broadcast_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    rotation: bgrun_daemon::log_manager::RotationConfig,
 ) {
     use std::io::Read;
+
+    // Reopen the log file handle so rotation (rename + fresh file) is picked up.
+    let reopen = |path: &std::path::Path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    };
 
     let mut file = match std::fs::OpenOptions::new()
         .create(true)
@@ -1603,6 +1633,21 @@ fn capture_pty_output(
                 }
                 if start < n {
                     partial.extend_from_slice(&buf[start..n]);
+                }
+                // Check for rotation (only once per chunk)
+                if let Ok(meta) = std::fs::metadata(log_path) {
+                    if meta.len() > rotation.max_bytes {
+                        let dir = log_path.parent();
+                        let rotated = dir.is_some_and(|d| {
+                            bgrun_daemon::log_manager::rotate_files_blocking(d, &rotation)
+                                .unwrap_or(false)
+                        });
+                        if rotated {
+                            if let Ok(new_file) = reopen(log_path) {
+                                file = new_file;
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {

@@ -16,6 +16,12 @@ pub struct RunArgs {
     /// `on-failure[:max-retries]`). None = retry forever.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_retries: Option<u32>,
+    /// Rotate the log once it exceeds this many bytes (default 50MB).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub log_max_size: Option<u64>,
+    /// Number of rotated log files to retain (default 1).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub log_keep: Option<u32>,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
     pub env: HashMap<String, String>,
@@ -115,6 +121,19 @@ pub enum Command {
     StreamLogs { id: String },
     /// Read the last N lines from the in-memory screen buffer (non-blocking).
     Screen { id: String, lines: usize },
+    /// Export (filtered) log history — spanning rotated files — to a file.
+    Export {
+        id: String,
+        path: String,
+        lines: Option<usize>,
+        level: Option<String>,
+        stream: Option<String>,
+        #[serde(default)]
+        strip_ansi: bool,
+        filter_regex: Option<String>,
+        /// Only entries newer than now-minus-this-many-ms.
+        since_ms: Option<u64>,
+    },
 }
 
 /// A request sent from CLI to daemon.

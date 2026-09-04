@@ -4,6 +4,7 @@ pub mod completions;
 pub mod diff;
 pub mod interactive;
 pub mod expect;
+pub mod export;
 pub mod kill;
 pub mod list;
 pub mod restart;

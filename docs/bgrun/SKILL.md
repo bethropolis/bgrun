@@ -53,6 +53,7 @@ bgrun wait <id> --timeout 30s
 | `bgrun screen <id> [--lines N]` | Non-blocking in-memory buffer peek |
 | `bgrun expect <id> <pattern>` | Wait for log pattern |
 | `bgrun clean [--workspace <ws>]` | Remove all terminated jobs |
+| `bgrun export <id> [--file <p>] [--level <l>] [--since <d>]` | Dump log history (incl. rotated) to a file |
 | `bgrun run-group <name> [name...]` | Start multiple named jobs in parallel |
 
 ### `bgrun run` flags

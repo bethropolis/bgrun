@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use bgrun_proto::{LogDigest, LogLine};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt};
 
 use crate::state;
 
@@ -297,32 +297,378 @@ pub async fn diff_since(
     Ok((lines, file_size))
 }
 
-/// Rotates the log file if it exceeds 50MB.
-pub async fn rotate_if_needed(id: &str) -> Result<()> {
-    let dir = state::job_dir(id);
-    let log_path = dir.join("stdout.log");
-    let rotated_path = dir.join("stdout.log.1");
+/// Rotation settings for a job's log files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotationConfig {
+    /// Rotate the live log once it exceeds this size in bytes.
+    pub max_bytes: u64,
+    /// Number of rotated files (`stdout.log.1` …) to retain.
+    pub keep: u32,
+}
 
-    let metadata = match tokio::fs::metadata(&log_path).await {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+impl Default for RotationConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: 50 * 1024 * 1024,
+            keep: 1,
+        }
+    }
+}
+
+impl RotationConfig {
+    /// Resolves per-job overrides over the defaults. A `keep` of 0 is
+    /// clamped to 1 (rotation always retains at least one generation).
+    pub fn from_job(max_bytes: Option<u64>, keep: Option<u32>) -> Self {
+        let defaults = Self::default();
+        Self {
+            max_bytes: max_bytes.unwrap_or(defaults.max_bytes),
+            keep: keep.unwrap_or(defaults.keep).max(1),
+        }
+    }
+}
+
+/// Rotates `stdout.log` inside `dir` when it exceeds `cfg.max_bytes`,
+/// cascading `stdout.log.1..=cfg.keep` so the oldest generation is dropped.
+/// Returns true when a rotation happened.
+pub async fn rotate_files(dir: &std::path::Path, cfg: &RotationConfig) -> Result<bool> {
+    let live = dir.join("stdout.log");
+    let size = match tokio::fs::metadata(&live).await {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e).context("failed to stat log file"),
     };
+    if size <= cfg.max_bytes {
+        return Ok(false);
+    }
+    cascade_files(dir, cfg.keep).await?;
+    tokio::fs::rename(&live, dir.join("stdout.log.1"))
+        .await
+        .context("failed to rotate log file")?;
+    Ok(true)
+}
 
-    if metadata.len() > 50 * 1024 * 1024 {
-        let _ = tokio::fs::remove_file(&rotated_path).await;
-        tokio::fs::rename(&log_path, &rotated_path)
-            .await
-            .context("failed to rotate log file")?;
+async fn cascade_files(dir: &std::path::Path, keep: u32) -> Result<()> {
+    let keep = keep.max(1);
+    let _ = tokio::fs::remove_file(dir.join(format!("stdout.log.{keep}"))).await;
+    for n in (1..keep).rev() {
+        let from = dir.join(format!("stdout.log.{n}"));
+        if tokio::fs::metadata(&from).await.is_ok() {
+            tokio::fs::rename(&from, dir.join(format!("stdout.log.{}", n + 1)))
+                .await
+                .context("failed to cascade rotated logs")?;
+        }
+    }
+    Ok(())
+}
+
+/// Blocking rotation check for the synchronous PTY capture loop.
+/// Returns true when a rotation happened.
+pub fn rotate_files_blocking(dir: &std::path::Path, cfg: &RotationConfig) -> Result<bool> {
+    let live = dir.join("stdout.log");
+    let size = match std::fs::metadata(&live) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).context("failed to stat log file"),
+    };
+    if size <= cfg.max_bytes {
+        return Ok(false);
+    }
+    let keep = cfg.keep.max(1);
+    let _ = std::fs::remove_file(dir.join(format!("stdout.log.{keep}")));
+    for n in (1..keep).rev() {
+        let from = dir.join(format!("stdout.log.{n}"));
+        if std::fs::metadata(&from).is_ok() {
+            std::fs::rename(&from, dir.join(format!("stdout.log.{}", n + 1)))
+                .context("failed to cascade rotated logs")?;
+        }
+    }
+    std::fs::rename(&live, dir.join("stdout.log.1")).context("failed to rotate log file")?;
+    Ok(true)
+}
+
+/// Backward-compatible wrapper resolving the job dir from its id.
+pub async fn rotate_if_needed(id: &str, cfg: &RotationConfig) -> Result<bool> {
+    rotate_files(&state::job_dir(id), cfg).await
+}
+
+/// Options for a log export (see `export_logs`).
+#[derive(Debug)]
+pub struct ExportOpts {
+    pub out_path: std::path::PathBuf,
+    pub lines: Option<usize>,
+    pub level: Option<String>,
+    pub stream: Option<String>,
+    pub strip_ansi: bool,
+    pub filter_regex: Option<regex::Regex>,
+    /// Only entries newer than now-minus-this-many-ms. Entries without a
+    /// parseable timestamp are kept (they cannot be proven old).
+    pub since_ms: Option<u64>,
+}
+
+/// Writes (filtered) log content to `opts.out_path`, spanning rotated files
+/// oldest-first followed by the live log. `tail`/`diff` only ever read the
+/// live file; export is the way to retrieve rotated history. Returns the
+/// number of lines written.
+pub async fn export_logs(
+    dir: &std::path::Path,
+    keep: u32,
+    opts: &ExportOpts,
+) -> Result<usize> {
+    use tokio::io::AsyncWriteExt;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(u64::MAX, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let cutoff_ms = opts.since_ms.map(|ago| now_ms.saturating_sub(ago));
+
+    // Oldest generation first, live log last.
+    let mut sources = Vec::new();
+    for n in (1..=keep.max(1)).rev() {
+        let p = dir.join(format!("stdout.log.{n}"));
+        if tokio::fs::metadata(&p).await.is_ok() {
+            sources.push(p);
+        }
+    }
+    sources.push(dir.join("stdout.log"));
+
+    let mut out = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&opts.out_path)
+        .await
+        .with_context(|| format!("failed to open export file {}", opts.out_path.display()))?;
+
+    // With a line cap we must see everything before writing, so buffer the
+    // last N matches; otherwise stream straight to disk.
+    let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let cap = opts.lines.unwrap_or(usize::MAX).max(1);
+    let mut written = 0usize;
+
+    for path in sources {
+        let Ok(file) = tokio::fs::File::open(&path).await else {
+            continue;
+        };
+        let mut reader = tokio::io::BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .await
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            let (timestamp, stream, content) = parse_line(&line);
+            if !export_matches(&content, stream.as_deref(), timestamp.as_deref(), opts, cutoff_ms)
+            {
+                continue;
+            }
+            let mut text = content;
+            if opts.strip_ansi {
+                text = strip_ansi_escapes::strip(text.as_bytes())
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect();
+            }
+            if opts.lines.is_some() {
+                ring.push_back(text);
+                if ring.len() > cap {
+                    ring.pop_front();
+                }
+            } else {
+                out.write_all(text.as_bytes()).await?;
+                out.write_all(b"\n").await?;
+                written += 1;
+            }
+        }
     }
 
-    Ok(())
+    if opts.lines.is_some() {
+        for text in ring {
+            out.write_all(text.as_bytes()).await?;
+            out.write_all(b"\n").await?;
+            written += 1;
+        }
+    }
+    out.flush().await?;
+    Ok(written)
+}
+
+/// Shared match predicate for export filtering (same semantics as tail).
+fn export_matches(
+    content: &str,
+    stream: Option<&str>,
+    timestamp: Option<&str>,
+    opts: &ExportOpts,
+    cutoff_ms: Option<u64>,
+) -> bool {
+    if let Some(filter) = opts.stream.as_deref()
+        && stream != Some(filter)
+    {
+        return false;
+    }
+    if let Some(lvl) = opts.level.as_deref()
+        && !content.to_lowercase().contains(&lvl.to_lowercase())
+    {
+        return false;
+    }
+    if let Some(re) = opts.filter_regex.as_ref()
+        && !re.is_match(content)
+    {
+        return false;
+    }
+    if let Some(cutoff) = cutoff_ms
+        && let Some(ts) = timestamp
+        && let Ok(ts_ms) = parse_ts_ms(ts)
+        && ts_ms < cutoff
+    {
+        return false;
+    }
+    true
+}
+
+fn parse_ts_ms(ts: &str) -> Result<u64> {
+    let dt = chrono::DateTime::parse_from_rfc3339(ts).context("invalid timestamp")?;
+    Ok(dt.timestamp_millis().max(0) as u64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn ndjson(t: &str, s: &str, c: &str) -> String {
+        format!(r#"{{"t":"{t}","s":"{s}","c":"{c}"}}"#)
+    }
+
+    #[tokio::test]
+    async fn test_rotation_config_from_job() {
+        let d = RotationConfig::default();
+        assert_eq!(d.max_bytes, 50 * 1024 * 1024);
+        assert_eq!(d.keep, 1);
+        let c = RotationConfig::from_job(Some(1024), Some(3));
+        assert_eq!((c.max_bytes, c.keep), (1024, 3));
+        // keep=0 clamps to 1; unset falls back to defaults.
+        assert_eq!(RotationConfig::from_job(None, Some(0)).keep, 1);
+        assert_eq!(RotationConfig::from_job(None, None), d);
+    }
+
+    #[tokio::test]
+    async fn test_rotate_files_cascade() {
+        let dir = PathBuf::from("/tmp/bgrun-test-rotate");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("stdout.log"), vec![b'x'; 100]).await.unwrap();
+        tokio::fs::write(dir.join("stdout.log.1"), "old-one\n").await.unwrap();
+        tokio::fs::write(dir.join("stdout.log.2"), "old-two\n").await.unwrap();
+
+        let cfg = RotationConfig { max_bytes: 10, keep: 2 };
+        assert!(rotate_files(&dir, &cfg).await.unwrap());
+        // .2 now holds the previous .1, .1 holds the previous live log,
+        // and the live path is gone until the capture loop reopens it.
+        assert_eq!(
+            tokio::fs::read_to_string(dir.join("stdout.log.2")).await.unwrap(),
+            "old-one\n"
+        );
+        assert_eq!(tokio::fs::read(&dir.join("stdout.log.1")).await.unwrap().len(), 100);
+        assert!(tokio::fs::metadata(dir.join("stdout.log")).await.is_err());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_rotate_files_noop_when_small() {
+        let dir = PathBuf::from("/tmp/bgrun-test-rotate-noop");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("stdout.log"), "tiny\n").await.unwrap();
+
+        let cfg = RotationConfig { max_bytes: 10 * 1024, keep: 2 };
+        assert!(!rotate_files(&dir, &cfg).await.unwrap());
+        assert!(tokio::fs::metadata(dir.join("stdout.log.1")).await.is_err());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_export_spans_rotations_with_line_cap() {
+        let dir = PathBuf::from("/tmp/bgrun-test-export");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let ts = "2026-09-04T00:00:00.000Z";
+        tokio::fs::write(
+            dir.join("stdout.log.1"),
+            format!("{}\n{}\n", ndjson(ts, "stdout", "gen1-a"), ndjson(ts, "stdout", "gen1-b")),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.join("stdout.log"),
+            format!("{}\n{}\n", ndjson(ts, "stderr", "live-err"), ndjson(ts, "stdout", "live-ok")),
+        )
+        .await
+        .unwrap();
+
+        let out = dir.join("out.log");
+        let opts = ExportOpts {
+            out_path: out.clone(),
+            lines: Some(3),
+            level: None,
+            stream: None,
+            strip_ansi: false,
+            filter_regex: None,
+            since_ms: None,
+        };
+        let written = export_logs(&dir, 2, &opts).await.unwrap();
+        assert_eq!(written, 3);
+        // Oldest generation first, capped to the last 3 matches.
+        assert_eq!(
+            tokio::fs::read_to_string(&out).await.unwrap(),
+            "gen1-b\nlive-err\nlive-ok\n"
+        );
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_export_filters_and_since() {
+        let dir = PathBuf::from("/tmp/bgrun-test-export-filter");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let old_ts = "2020-01-01T00:00:00.000Z";
+        let new_ts = chrono::DateTime::from_timestamp_millis(now_ms as i64)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        tokio::fs::write(
+            dir.join("stdout.log"),
+            format!(
+                "{}\n{}\n{}\n",
+                ndjson(old_ts, "stdout", "ancient error"),
+                ndjson(&new_ts, "stdout", "fresh error"),
+                ndjson(&new_ts, "stdout", "fresh info"),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let out = dir.join("out.log");
+        let opts = ExportOpts {
+            out_path: out.clone(),
+            lines: None,
+            level: Some("error".into()),
+            stream: Some("stdout".into()),
+            strip_ansi: false,
+            filter_regex: None,
+            since_ms: Some(3_600_000), // last hour
+        };
+        let written = export_logs(&dir, 1, &opts).await.unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(tokio::fs::read_to_string(&out).await.unwrap(), "fresh error\n");
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 
     #[tokio::test]
     async fn test_tail_lines_reads_last_n() {

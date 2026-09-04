@@ -976,6 +976,65 @@ async fn dispatch(
                 Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
             }
         }
+        Command::Export {
+            id,
+            path,
+            lines,
+            level,
+            stream,
+            strip_ansi,
+            filter_regex,
+            since_ms,
+        } => {
+            // Resolve name to UUID and read the job's rotation depth (export
+            // spans rotated files, so it needs to know how many may exist).
+            let (job_id, keep) = {
+                let store_ref = store.lock().await;
+                match store_ref.resolve_id(&id).and_then(|jid| store_ref.get(&jid)) {
+                    Some(job) => (
+                        job.id.clone(),
+                        job.log_keep
+                            .unwrap_or(bgrun_daemon::log_manager::RotationConfig::default().keep),
+                    ),
+                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                }
+            };
+            let regex = match filter_regex {
+                Some(ref p) => match regex::Regex::new(p) {
+                    Ok(re) => Some(re),
+                    Err(e) => {
+                        return serde_json::to_value(Response::<()>::err(
+                            req_id.clone(),
+                            format!("invalid filter regex: {e}"),
+                        ))
+                        .unwrap_or_default()
+                    }
+                },
+                None => None,
+            };
+            let opts = bgrun_daemon::log_manager::ExportOpts {
+                out_path: std::path::PathBuf::from(path),
+                lines,
+                level,
+                stream,
+                strip_ansi,
+                filter_regex: regex,
+                since_ms,
+            };
+            match bgrun_daemon::log_manager::export_logs(
+                &bgrun_daemon::state::job_dir(&job_id),
+                keep,
+                &opts,
+            )
+            .await
+            {
+                Ok(written) => Response::ok(
+                    req_id.clone(),
+                    serde_json::json!({"path": opts.out_path, "lines": written}),
+                ),
+                Err(e) => Response::err(req_id.clone(), e.to_string()),
+            }
+        }
     };
 
     // Record audit entry with a concise args summary
@@ -1061,6 +1120,7 @@ fn args_summary(cmd: &Command) -> String {
         Command::RunGroup { jobs } => format!("{} jobs", jobs.len()),
         Command::StreamLogs { id } => format!("id={}", id),
         Command::Screen { id, lines } => format!("id={} lines={}", id, lines),
+        Command::Export { id, path, .. } => format!("id={} path={}", id, path),
     }
 }
 

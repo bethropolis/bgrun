@@ -91,13 +91,14 @@ complete -c bgrun -n "__fish_use_subcommand" -a "stats" -d "Show resource stats 
 complete -c bgrun -n "__fish_use_subcommand" -a "expect" -d "Wait for a pattern in a job's log output"
 complete -c bgrun -n "__fish_use_subcommand" -a "attach" -d "Attach to a PTY job's interactive terminal"
 complete -c bgrun -n "__fish_use_subcommand" -a "screen" -d "Show last N lines from in-memory buffer"
+complete -c bgrun -n "__fish_use_subcommand" -a "export" -d "Export log history to a file"
 complete -c bgrun -n "__fish_use_subcommand" -a "schema" -d "Print JSON Schema for a command's arguments"
 complete -c bgrun -n "__fish_use_subcommand" -a "clean" -d "Remove all terminated jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skills"
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID
-complete -c bgrun -n "__fish_seen_subcommand_from status kill stop restart wait tail diff send stats attach expect screen" -a "(bgrun completions --active-ids)"
+complete -c bgrun -n "__fish_seen_subcommand_from status kill stop restart wait tail diff send stats attach expect screen export" -a "(bgrun completions --active-ids)"
 
 # Dynamic workspaces for list, kill, and clean
 complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
@@ -116,6 +117,8 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l pty -d "Allocate a PTY
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l restart -d "Restart policy (never/on-crash/on-failure/always)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l backoff -d "Backoff duration"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-retries -d "Max consecutive restart attempts"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l log-max-size -d "Rotate log past this size"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l log-keep -d "Rotated log files to retain"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cols -d "PTY columns"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l rows -d "PTY rows"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-rss -d "Max RSS in MB"
@@ -167,6 +170,15 @@ complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspa
 # Stop / restart flags
 complete -c bgrun -n "__fish_seen_subcommand_from stop restart" -l timeout -d "Grace period before SIGKILL"
 
+# Export flags
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l file -d "Destination file"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l lines -d "Last N matching lines"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l level -d "Filter by level"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l stream -d "Filter by stream"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l strip-ansi -d "Strip ANSI escapes"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l filter-regex -d "Filter by regex"
+complete -c bgrun -n "__fish_seen_subcommand_from export" -l since -d "Only recent entries (e.g. 30m)"
+
 # Global flags
 complete -c bgrun -l json -d "Output in JSON format"
 complete -c bgrun -l help -d "Print help" -s h
@@ -183,7 +195,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen schema clean skill help"
+    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -191,7 +203,7 @@ _bgrun()
     fi
 
     case "${words[1]}" in
-        status|kill|wait|tail|diff|send|stats|expect|attach|screen)
+        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen|export)
             local ids
             ids=$(bgrun completions --active-ids 2>/dev/null | awk '{print $1}')
             COMPREPLY=($(compgen -W "$ids" -- "$cur"))
@@ -209,11 +221,15 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         stop|restart)
             COMPREPLY=($(compgen -W "--timeout" -- "$cur"))
+            ;;
+        export)
+            local opts="--file --lines --level --stream --strip-ansi --filter-regex --since"
+            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         clean)
             local opts="--workspace --force"
@@ -251,6 +267,7 @@ _bgrun() {
         'expect:Wait for a pattern in log output'
         'attach:Attach to a PTY job terminal'
         'screen:Show last N lines from in-memory buffer'
+        'export:Export log history to a file'
         'schema:Print JSON Schema for a command'
         'clean:Remove all terminated jobs'
         'skill:Manage embedded skills'
@@ -269,7 +286,7 @@ _bgrun() {
             ;;
         args)
             case "$words[1]" in
-        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen)
+        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen|export)
                     local ids
                     ids=(${(f)"$(_call_program ids bgrun completions --active-ids 2>/dev/null | awk '{print $1}')"})
                     _values 'job id' $ids
@@ -291,6 +308,8 @@ _bgrun() {
                         '--restart=[Restart policy]:policy:(never on-crash on-failure always)' \
                         '--backoff=[Backoff duration]:duration:' \
                         '--max-retries=[Max consecutive restart attempts]:count:' \
+                        '--log-max-size=[Rotate log past this size]:size:' \
+                        '--log-keep=[Rotated log files to retain]:count:' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \
@@ -308,6 +327,16 @@ _bgrun() {
                     ;;
                 stop|restart)
                     _arguments '--timeout=[Grace period before SIGKILL]:duration:'
+                    ;;
+                export)
+                    _arguments \
+                        '--file=[Destination file]:file:_files' \
+                        '--lines=[Last N matching lines]:count:' \
+                        '--level=[Filter by level]:level:' \
+                        '--stream=[Filter by stream]:stream:(stdout stderr pty)' \
+                        '--strip-ansi[Strip ANSI escapes]' \
+                        '--filter-regex=[Filter by regex]:pattern:' \
+                        '--since=[Only recent entries]:duration:'
                     ;;
             esac
             ;;

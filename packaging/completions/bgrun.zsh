@@ -22,6 +22,7 @@ _bgrun() {
         'expect:Wait for a pattern in log output'
         'attach:Attach to a PTY job terminal'
         'screen:Show last N lines from in-memory buffer'
+        'export:Export log history to a file'
         'schema:Print JSON Schema for a command'
         'clean:Remove all terminated jobs'
         'skill:Manage embedded skills'
@@ -40,7 +41,7 @@ _bgrun() {
             ;;
         args)
             case "$words[1]" in
-        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen)
+        status|kill|stop|restart|wait|tail|diff|send|stats|expect|attach|screen|export)
                     local ids
                     ids=(${(f)"$(_call_program ids bgrun completions --active-ids 2>/dev/null | awk '{print $1}')"})
                     _values 'job id' $ids
@@ -62,6 +63,8 @@ _bgrun() {
                         '--restart=[Restart policy]:policy:(never on-crash on-failure always)' \
                         '--backoff=[Backoff duration]:duration:' \
                         '--max-retries=[Max consecutive restart attempts]:count:' \
+                        '--log-max-size=[Rotate log past this size]:size:' \
+                        '--log-keep=[Rotated log files to retain]:count:' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \
@@ -79,6 +82,16 @@ _bgrun() {
                     ;;
                 stop|restart)
                     _arguments '--timeout=[Grace period before SIGKILL]:duration:'
+                    ;;
+                export)
+                    _arguments \
+                        '--file=[Destination file]:file:_files' \
+                        '--lines=[Last N matching lines]:count:' \
+                        '--level=[Filter by level]:level:' \
+                        '--stream=[Filter by stream]:stream:(stdout stderr pty)' \
+                        '--strip-ansi[Strip ANSI escapes]' \
+                        '--filter-regex=[Filter by regex]:pattern:' \
+                        '--since=[Only recent entries]:duration:'
                     ;;
             esac
             ;;

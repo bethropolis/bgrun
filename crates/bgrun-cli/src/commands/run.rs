@@ -5,7 +5,7 @@ use bgrun_proto::{Command, JobRecord, ReadinessStrategy, RunArgs};
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
-use crate::duration::BgrunDuration;
+use crate::duration::{BgrunDuration, BgrunSize};
 use crate::output::{output_mode, print_job};
 
 /// Optional flags for the run command.
@@ -21,6 +21,8 @@ pub struct RunFlags {
     pub restart: Option<String>,
     pub backoff: Option<String>,
     pub max_retries: Option<u32>,
+    pub log_max_size: Option<String>,
+    pub log_keep: Option<u32>,
     pub pty_cols: Option<u16>,
     pub pty_rows: Option<u16>,
     pub max_rss_mb: Option<u64>,
@@ -131,6 +133,11 @@ pub async fn run(
     }
     env.extend(parse_env_list(&flags.env)?);
 
+    // Resolve restart policy first: it borrows `flags` wholesale, which must
+    // happen before the readiness chain below partially moves flag fields
+    // into its closures.
+    let restart = resolve_restart_policy(&flags)?;
+
     // Resolve readiness strategy from flags (first match wins)
     let readiness = flags
         .ready_when_regex
@@ -139,23 +146,6 @@ pub async fn run(
         .or_else(|| flags.ready_when_port.map(ReadinessStrategy::TcpPort))
         .or_else(|| flags.ready_when_url.map(ReadinessStrategy::HttpPoll))
         .or_else(|| flags.ready_when_file.map(ReadinessStrategy::FileExists));
-
-    // Resolve restart policy (backoff shared by all restart-on-exit policies)
-    let backoff_ms = match flags.backoff {
-        Some(ref b) => Some(b.parse::<BgrunDuration>()?.0),
-        None => None,
-    }
-    .unwrap_or(2000);
-    let restart = match flags.restart.as_deref() {
-        Some("never") => Some(bgrun_proto::RestartPolicy::Never),
-        Some("on-crash") => Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms }),
-        Some("on-failure") => Some(bgrun_proto::RestartPolicy::OnFailure { backoff_ms }),
-        Some("always") => Some(bgrun_proto::RestartPolicy::Always { backoff_ms }),
-        Some(other) => anyhow::bail!(
-            "invalid restart policy: {other:?} (expected 'never', 'on-crash', 'on-failure' or 'always')"
-        ),
-        None => None,
-    };
 
     // Resolve health check strategy
     let health_check = flags
@@ -170,6 +160,16 @@ pub async fn run(
             .map(|p| p.to_string_lossy().into_owned()),
     };
 
+    let log_max_size = match flags.log_max_size {
+        Some(ref s) => Some(s.parse::<BgrunSize>()?.0),
+        None => None,
+    };
+    if let Some(keep) = flags.log_keep {
+        if keep == 0 {
+            anyhow::bail!("invalid --log-keep 0: must retain at least one rotated file");
+        }
+    }
+
     let args = RunArgs {
         cmd,
         name,
@@ -177,6 +177,8 @@ pub async fn run(
         readiness,
         restart,
         max_retries: flags.max_retries,
+        log_max_size,
+        log_keep: flags.log_keep,
         pty: flags.pty,
         max_runtime_ms: flags.max_runtime_ms,
         env,
@@ -207,6 +209,26 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Resolves `--restart`/`--backoff` into a policy. The backoff is shared by
+/// all restart-on-exit policies.
+fn resolve_restart_policy(flags: &RunFlags) -> Result<Option<bgrun_proto::RestartPolicy>> {
+    let backoff_ms = match flags.backoff {
+        Some(ref b) => Some(b.parse::<BgrunDuration>()?.0),
+        None => None,
+    }
+    .unwrap_or(2000);
+    match flags.restart.as_deref() {
+        Some("never") => Ok(Some(bgrun_proto::RestartPolicy::Never)),
+        Some("on-crash") => Ok(Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms })),
+        Some("on-failure") => Ok(Some(bgrun_proto::RestartPolicy::OnFailure { backoff_ms })),
+        Some("always") => Ok(Some(bgrun_proto::RestartPolicy::Always { backoff_ms })),
+        Some(other) => anyhow::bail!(
+            "invalid restart policy: {other:?} (expected 'never', 'on-crash', 'on-failure' or 'always')"
+        ),
+        None => Ok(None),
+    }
 }
 
 /// Waits for a just-started job to become Ready and reports the outcome.

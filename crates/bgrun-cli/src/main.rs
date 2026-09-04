@@ -83,6 +83,14 @@ enum Commands {
         #[arg(long = "max-retries")]
         max_retries: Option<u32>,
 
+        /// Rotate the log once it exceeds this size (e.g. "50M", "1G", default "50M")
+        #[arg(long = "log-max-size")]
+        log_max_size: Option<String>,
+
+        /// Number of rotated log files to retain (default 1)
+        #[arg(long = "log-keep")]
+        log_keep: Option<u32>,
+
         /// PTY columns (default 80)
         #[arg(long)]
         cols: Option<u16>,
@@ -266,6 +274,44 @@ enum Commands {
         filter_regex: Option<String>,
     },
 
+    /// Export a job's log history (including rotated files) to a file
+    Export {
+        /// Job ID or name
+        id: Option<String>,
+
+        /// Alternative to positional ID
+        #[arg(short = 'n', long)]
+        name: Option<String>,
+
+        /// Destination file (default: ./bgrun-<id>.log, resolved against cwd)
+        #[arg(long)]
+        file: Option<String>,
+
+        /// Export only the last N matching lines (default: all)
+        #[arg(long)]
+        lines: Option<usize>,
+
+        /// Filter by level (e.g. "error", "warn")
+        #[arg(long)]
+        level: Option<String>,
+
+        /// Filter by stream source (stdout, stderr, pty)
+        #[arg(long)]
+        stream: Option<String>,
+
+        /// Strip ANSI escape codes from output
+        #[arg(long)]
+        strip_ansi: bool,
+
+        /// Filter log lines by regex pattern
+        #[arg(long)]
+        filter_regex: Option<String>,
+
+        /// Only entries from the recent past (e.g. "30m", "2h", "1h")
+        #[arg(long)]
+        since: Option<String>,
+    },
+
     /// Run multiple named jobs in parallel
     RunGroup {
         /// Job names to run
@@ -407,6 +453,8 @@ async fn main() -> Result<()> {
             restart,
             backoff,
             max_retries,
+            log_max_size,
+            log_keep,
             cols,
             rows,
             max_rss,
@@ -437,6 +485,8 @@ async fn main() -> Result<()> {
                 restart,
                 backoff,
                 max_retries,
+                log_max_size,
+                log_keep,
                 pty_cols: cols,
                 pty_rows: rows,
                 max_rss_mb: max_rss,
@@ -503,6 +553,20 @@ async fn main() -> Result<()> {
         }) => {
             let id = resolve_id_or_name(id, name, "diff")?;
             commands::diff::diff(id, lines, stream, strip_ansi, filter_regex, json).await?;
+        }
+        Some(Commands::Export {
+            id,
+            name,
+            file,
+            lines,
+            level,
+            stream,
+            strip_ansi,
+            filter_regex,
+            since,
+        }) => {
+            let id = resolve_id_or_name(id, name, "export")?;
+            commands::export::export(id, file, lines, level, stream, strip_ansi, filter_regex, since, json).await?;
         }
         Some(Commands::RunGroup { names }) => {
             commands::run_group::run_group(names, json).await?;
