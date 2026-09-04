@@ -90,7 +90,14 @@ async fn fetch_jobs(workspace: Option<String>) -> Result<Vec<JobRecord>> {
 fn render_dashboard(records: &[JobRecord], workspace: Option<&str>) {
     let alive = records
         .iter()
-        .filter(|r| r.state.to_string() != "Exited" && r.state.to_string() != "Crashed" && r.state.to_string() != "Killed")
+        .filter(|r| {
+            !matches!(
+                r.state,
+                bgrun_proto::JobState::Exited
+                    | bgrun_proto::JobState::Crashed
+                    | bgrun_proto::JobState::Killed
+            )
+        })
         .count();
     let terminal = records.len().saturating_sub(alive);
     let scope = workspace.unwrap_or("all workspaces");

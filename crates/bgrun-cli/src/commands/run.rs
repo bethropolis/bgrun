@@ -69,16 +69,17 @@ pub async fn run(
     ensure_daemon_running(&socket_path).await?;
 
     // Try to resolve from bgrun.toml if cmd is a single word matching a job name
+    let mut resolved_args: Option<RunArgs> = None;
     if cmd.len() == 1 {
         if let Some(resolved) = try_resolve_from_config(&cmd[0]).await {
-            cmd = resolved.cmd;
-            name = name.or(resolved.name);
-            workspace = workspace.or(resolved.workspace);
+            cmd = resolved.cmd.clone();
+            name = name.or(resolved.name.clone());
+            workspace = workspace.or(resolved.workspace.clone());
             if flags.ready_when.is_none() && flags.ready_when_regex.is_none()
                 && flags.ready_when_port.is_none() && flags.ready_when_url.is_none()
                 && flags.ready_when_file.is_none()
             {
-                match resolved.readiness {
+                match resolved.readiness.clone() {
                     Some(ReadinessStrategy::LogPattern(p)) => flags.ready_when = Some(p),
                     Some(ReadinessStrategy::LogPatternRegex(p)) => flags.ready_when_regex = Some(p),
                     Some(ReadinessStrategy::TcpPort(p)) => flags.ready_when_port = Some(p),
@@ -87,7 +88,10 @@ pub async fn run(
                     None => {}
                 }
             }
-            flags.after = flags.after.or(resolved.after);
+            flags.after = flags.after.or(resolved.after.clone());
+            flags.cwd = flags.cwd.or_else(|| resolved.cwd.clone());
+            flags.pty = flags.pty || resolved.pty;
+            resolved_args = Some(resolved);
         }
     }
 
@@ -135,6 +139,13 @@ pub async fn run(
         }
     }
     env.extend(parse_env_list(&flags.env)?);
+    // Config-defined env applies after the terminal defaults; explicit
+    // --env entries (applied below) always win.
+    if let Some(ref resolved) = resolved_args {
+        for (key, val) in resolved.env.clone() {
+            env.entry(key).or_insert(val);
+        }
+    }
 
     // Resolve restart policy first: it borrows `flags` wholesale, which must
     // happen before the readiness chain below partially moves flag fields
@@ -187,7 +198,7 @@ pub async fn run(
         anyhow::bail!("invalid --pids-max 0: must allow at least one task");
     }
 
-    let args = RunArgs {
+    let mut args = RunArgs {
         cmd,
         name,
         workspace,
@@ -212,6 +223,27 @@ pub async fn run(
         health_interval_secs: flags.health_interval,
         health_threshold: flags.health_threshold,
     };
+
+    // Carry over remaining config-provided settings that have no direct flag
+    // equivalent or weren't already overlaid. Explicit CLI flags win.
+    if let Some(resolved) = resolved_args {
+        args.restart = args.restart.or(resolved.restart);
+        args.max_retries = args.max_retries.or(resolved.max_retries);
+        args.log_max_size = args.log_max_size.or(resolved.log_max_size);
+        args.log_keep = args.log_keep.or(resolved.log_keep);
+        args.memory_max = args.memory_max.or(resolved.memory_max);
+        args.cpu_quota = args.cpu_quota.or(resolved.cpu_quota);
+        args.pids_max = args.pids_max.or(resolved.pids_max);
+        args.max_runtime_ms = args.max_runtime_ms.or(resolved.max_runtime_ms);
+        args.max_rss_mb = args.max_rss_mb.or(resolved.max_rss_mb);
+        args.pty_cols = args.pty_cols.or(resolved.pty_cols);
+        args.pty_rows = args.pty_rows.or(resolved.pty_rows);
+        args.allocate_port = args.allocate_port.or(resolved.allocate_port);
+        args.health_check = args.health_check.or(resolved.health_check);
+        args.health_interval_secs = args.health_interval_secs.or(resolved.health_interval_secs);
+        args.health_threshold = args.health_threshold.or(resolved.health_threshold);
+        args.readiness = args.readiness.or(resolved.readiness);
+    }
 
     let response = client.send::<JobRecord>(Command::Run(args)).await?;
 

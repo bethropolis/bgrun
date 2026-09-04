@@ -98,9 +98,10 @@ pub async fn tail(
             }
         }
 
-        // Follow mode: use StreamLogs for non-polling log stream
+        // Follow mode: stream only live lines — history was already printed
+        // by the Tail above, so replaying it would duplicate output.
         if follow {
-            stream_logs_follow(&socket_path, &id, json).await?;
+            stream_logs_follow(&socket_path, &id, level.clone(), filter_regex.clone(), json).await?;
         }
     }
 
@@ -108,10 +109,13 @@ pub async fn tail(
 }
 
 /// Connects to the daemon, sends a StreamLogs command, and prints live
-/// LogLine entries as they arrive (non-polling).
+/// LogLine entries as they arrive (non-polling). `cursor` is `None`: history
+/// is the caller's job (Tail), only live lines are streamed, optionally filtered.
 async fn stream_logs_follow(
     socket_path: &std::path::Path,
     job_id: &str,
+    level: Option<String>,
+    filter_regex: Option<String>,
     json: bool,
 ) -> Result<()> {
     let stream = UnixStream::connect(socket_path).await?;
@@ -123,6 +127,9 @@ async fn stream_logs_follow(
         id: uuid::Uuid::new_v4().to_string(),
         command: Command::StreamLogs {
             id: job_id.to_string(),
+            cursor: None,
+            level,
+            filter_regex,
         },
     };
     let cmd_json = serde_json::to_string(&request)?;

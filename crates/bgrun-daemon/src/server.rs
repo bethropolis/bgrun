@@ -124,7 +124,9 @@ async fn handle_connection(
     // If it's an Attach or StreamLogs command, hijack the connection
     match request.command {
         Command::Attach { id } => return handle_attach(id, stream, store).await,
-        Command::StreamLogs { id } => return handle_stream_logs(id, stream, store).await,
+        Command::StreamLogs { id, cursor, level, filter_regex } => {
+            return handle_stream_logs(id, cursor, level, filter_regex, stream, store).await
+        }
         _ => {}
     }
 
@@ -338,10 +340,15 @@ async fn handle_attach(
 }
 
 /// Handles a StreamLogs command: hijacks the connection and streams LogLine
-/// entries as NDJSON. First sends any lines already on disk, then subscribes
-/// to the live broadcast channel.
+/// entries as NDJSON. If `cursor` is set, first replays lines written after
+/// that byte offset (with the requested filters applied and true line
+/// numbers); otherwise only live lines are streamed. The client is expected
+/// to fetch history via `Tail` separately.
 async fn handle_stream_logs(
     id: String,
+    cursor: Option<u64>,
+    level: Option<String>,
+    filter_regex: Option<String>,
     stream: UnixStream,
     store: Arc<Mutex<JobStore>>,
 ) -> Result<()> {
@@ -365,34 +372,56 @@ async fn handle_stream_logs(
         }
     };
 
-    // Read existing lines from disk
-    let log_path = crate::state::job_dir(&job_id).join("stdout.log");
-    let file_size = get_file_size(&log_path).await;
-    let existing_lines = if file_size > 0 {
-        let content = read_range(&log_path, 0, file_size).await.unwrap_or_default();
-        content
-            .lines()
-            .filter_map(|raw| {
+    let filter = regex::Regex::new(filter_regex.as_deref().unwrap_or("$^")).ok();
+    let matches_filters = move |content: &str| -> bool {
+        if let Some(lvl) = level.as_deref() {
+            if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+                return false;
+            }
+        }
+        if let Some(re) = &filter {
+            if !re.is_match(content) {
+                return false;
+            }
+        }
+        true
+    };
+
+    // Replay history after the cursor (if requested), with true line numbers.
+    let mut replayed: Vec<LogLine> = Vec::new();
+    let mut file_size: u64 = 0;
+    if let Some(offset) = cursor {
+        let log_path = crate::state::job_dir(&job_id).join("stdout.log");
+        file_size = get_file_size(&log_path).await;
+        if file_size > offset {
+            let content = read_range(&log_path, offset, file_size)
+                .await
+                .unwrap_or_default();
+            // Count lines before the cursor so replayed line numbers are true.
+            let mut line_number: u64 = count_newlines_before(&log_path, offset).await;
+            for raw in content.lines() {
+                line_number += 1;
                 let (timestamp, _stream, content) = crate::log_manager::parse_line(raw);
-                Some(LogLine {
-                    line_number: 0,
+                if !matches_filters(&content) {
+                    continue;
+                }
+                replayed.push(LogLine {
+                    line_number,
                     content,
                     timestamp,
-                })
-            })
-            .collect::<Vec<LogLine>>()
-    } else {
-        Vec::new()
-    };
+                });
+            }
+        }
+    }
 
     let (_, mut stream_write) = stream.into_split();
 
-    // Send initial success response with existing lines count
+    // Send initial success response with replayed lines count
     let init = serde_json::json!({
         "id": "stream",
         "ok": true,
         "data": {
-            "existing": existing_lines.len(),
+            "existing": replayed.len(),
             "cursor": file_size,
         }
     });
@@ -400,8 +429,8 @@ async fn handle_stream_logs(
     stream_write.write_all(json.as_bytes()).await?;
     stream_write.write_all(b"\n").await?;
 
-    // Send existing lines
-    for line in &existing_lines {
+    // Send replayed lines
+    for line in &replayed {
         let json = serde_json::to_string(line)?;
         stream_write.write_all(json.as_bytes()).await?;
         stream_write.write_all(b"\n").await?;
@@ -418,11 +447,14 @@ async fn handle_stream_logs(
         None => return Ok(()),
     };
 
-    // Spawn task to forward broadcast LogLines → socket
+    // Spawn task to forward broadcast LogLines → socket (filtered).
     let mut output_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(line) => {
+                    if !matches_filters(&line.content) {
+                        continue;
+                    }
                     let json = serde_json::to_string(&line).unwrap_or_default();
                     if stream_write.write_all(json.as_bytes()).await.is_err() {
                         break;
@@ -1098,6 +1130,30 @@ async fn dispatch(
 }
 
 /// Returns the size of a file, or 0 if it doesn't exist.
+/// Counts `\n` bytes in the first `offset` bytes of the file, so lines
+/// replayed after `offset` can carry true file line numbers.
+async fn count_newlines_before(path: &std::path::Path, offset: u64) -> u64 {
+    use tokio::io::AsyncReadExt;
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let mut remaining = offset as usize;
+    let mut count: u64 = 0;
+    let mut buf = vec![0u8; 65536];
+    while remaining > 0 {
+        let to_read = remaining.min(buf.len());
+        match file.read(&mut buf[..to_read]).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                count += buf[..n].iter().filter(|&&b| b == b'\n').count() as u64;
+                remaining -= n;
+            }
+        }
+    }
+    count
+}
+
 async fn get_file_size(path: &std::path::Path) -> u64 {
     tokio::fs::metadata(path)
         .await
@@ -1163,7 +1219,7 @@ fn args_summary(cmd: &Command) -> String {
         Command::ResizePty { id, cols, rows } => format!("id={} {}x{}", id, cols, rows),
         Command::Clean { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
         Command::RunGroup { jobs } => format!("{} jobs", jobs.len()),
-        Command::StreamLogs { id } => format!("id={}", id),
+        Command::StreamLogs { id, .. } => format!("id={id}"),
         Command::Screen { id, lines } => format!("id={} lines={}", id, lines),
         Command::Export { id, path, .. } => format!("id={} path={}", id, path),
     }

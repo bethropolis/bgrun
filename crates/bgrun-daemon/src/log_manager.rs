@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use bgrun_proto::{LogDigest, LogLine};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 use crate::state;
 
@@ -29,12 +29,13 @@ pub fn parse_line(raw: &str) -> (Option<String>, Option<String>, String) {
     (None, None, raw.to_string())
 }
 
-/// Returns the last `n` lines from the job's stdout.log, optionally filtered
-/// by stream source ("stdout", "stderr", "pty", or None for all) and/or by
+/// Returns the last `n` *matching* lines from the job's stdout.log, optionally
+/// filtered by stream source ("stdout", "stderr", "pty", or None for all) and/or by
 /// a substring level filter (e.g. "error", "warn") and/or a regex pattern.
 ///
-/// First pass counts lines and tracks newline byte offsets as a ring buffer of N+1.
-/// Second pass reads only the needed portion from disk.
+/// The file is scanned once; filters are applied during the scan so the last
+/// `n` lines that *match* are returned (not the last `n` raw lines re-filtered),
+/// and line numbers reflect the true position in the file.
 pub async fn tail_lines(
     id: &str,
     n: usize,
@@ -43,84 +44,71 @@ pub async fn tail_lines(
     filter_regex: Option<&regex::Regex>,
 ) -> Result<Vec<LogLine>> {
     let path = state::job_dir(id).join("stdout.log");
-    let mut file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
+    let file = match tokio::fs::OpenOptions::new().read(true).open(&path).await {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).context("failed to open log file"),
     };
 
-    let file_size = file.seek(std::io::SeekFrom::End(0)).await? as usize;
-    if file_size == 0 {
+    let mut reader = BufReader::new(file);
+    if n == 0 {
         return Ok(Vec::new());
     }
+    let mut line_buf = String::new();
+    // Ring buffer of the last n matching lines.
+    let mut matched: std::collections::VecDeque<LogLine> = std::collections::VecDeque::with_capacity(n);
+    let mut line_number: u64 = 0;
 
-    file.seek(std::io::SeekFrom::Start(0)).await?;
-
-    // Pass 1: track newline positions in a ring buffer of size n+1.
-    let mut nl_positions: Vec<usize> = Vec::with_capacity(n + 2);
-    let mut pos = 0usize;
-    let mut buf = vec![0u8; 65536];
-
-    while pos < file_size {
-        let to_read = (file_size - pos).min(buf.len());
-        file.read_exact(&mut buf[..to_read]).await?;
-        for (i, &b) in buf[..to_read].iter().enumerate() {
-            if b == b'\n' {
-                nl_positions.push(pos + i);
-                if nl_positions.len() > n + 1 {
-                    nl_positions.remove(0);
-                }
+    loop {
+        line_buf.clear();
+        let bytes = reader
+            .read_line(&mut line_buf)
+            .await
+            .context("failed to read log file")?;
+        if bytes == 0 {
+            break;
+        }
+        if line_buf.ends_with('\n') {
+            line_buf.pop();
+            if line_buf.ends_with('\r') {
+                line_buf.pop();
             }
         }
-        pos += to_read;
+        if line_buf.is_empty() && bytes == 1 {
+            // Count blank lines so numbering stays accurate, but never emit them.
+            line_number += 1;
+            continue;
+        }
+        line_number += 1;
+
+        let (timestamp, stream, content) = parse_line(&line_buf);
+        if let Some(filter) = stream_filter {
+            if stream.as_deref() != Some(filter) {
+                continue;
+            }
+        }
+        if let Some(lvl) = level_filter {
+            if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+                continue;
+            }
+        }
+        if let Some(re) = filter_regex {
+            if !re.is_match(&content) {
+                continue;
+            }
+        }
+
+        if matched.len() == n {
+            matched.pop_front();
+        }
+        matched.push_back(LogLine {
+            line_number,
+            content,
+            timestamp,
+        });
     }
 
-    // Determine start byte offset for last N lines
-    let start_offset = if nl_positions.len() > n {
-        nl_positions[0] + 1
-    } else {
-        0usize
-    };
-
-    // Pass 2: read content from start_offset
-    file.seek(std::io::SeekFrom::Start(start_offset as u64))
-        .await?;
-    let remaining = file_size - start_offset;
-    let mut content = String::with_capacity(remaining);
-    file.read_to_string(&mut content).await?;
-
-    let lines: Vec<&str> = content.lines().collect();
-    let line_offset = nl_positions.len().saturating_sub(lines.len()) as u64 + 1;
-
-    let result: Vec<LogLine> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            let (timestamp, stream, content) = parse_line(line);
-            if let Some(filter) = stream_filter {
-                if stream.as_deref() != Some(filter) {
-                    return None;
-                }
-            }
-            if let Some(lvl) = level_filter {
-                if !content.to_lowercase().contains(&lvl.to_lowercase()) {
-                    return None;
-                }
-            }
-            if let Some(re) = filter_regex {
-                if !re.is_match(&content) {
-                    return None;
-                }
-            }
-            Some(LogLine {
-                line_number: line_offset + i as u64,
-                content,
-                timestamp,
-            })
-        })
-        .collect();
-
-    Ok(result)
+    Ok(matched.into_iter().collect())
 }
 
 /// Returns a digest summary of the job's log.
@@ -668,6 +656,45 @@ mod tests {
         assert_eq!(written, 1);
         assert_eq!(tokio::fs::read_to_string(&out).await.unwrap(), "fresh error\n");
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_tail_lines_filtered_last_n_and_numbering() {
+        let id = "tail-filter-test";
+        let dir = state::job_dir(id);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let mut content = String::new();
+        // 100 error lines followed by 20 info lines.
+        for i in 1..=100 {
+            content.push_str(&format!(
+                "{{\"t\":\"2026-01-01T00:00:00.000Z\",\"s\":\"stdout\",\"c\":\"error {}\"}}\n",
+                i
+            ));
+        }
+        for i in 1..=20 {
+            content.push_str(&format!(
+                "{{\"t\":\"2026-01-01T00:00:00.000Z\",\"s\":\"stdout\",\"c\":\"info {}\"}}\n",
+                i
+            ));
+        }
+        tokio::fs::write(dir.join("stdout.log"), content).await.unwrap();
+
+        // Last 3 matching error lines — not the last 3 raw lines re-filtered.
+        let lines = tail_lines(id, 3, None, Some("error"), None).await.unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].content, "error 98");
+        assert_eq!(lines[2].content, "error 100");
+        // True file line numbers: errors occupy lines 1..=100.
+        assert_eq!(lines[0].line_number, 98);
+        assert_eq!(lines[2].line_number, 100);
+
+        // No filter: last 2 lines are the final info lines with true numbering.
+        let lines = tail_lines(id, 2, None, None, None).await.unwrap();
+        assert_eq!(lines[0].line_number, 119);
+        assert_eq!(lines[1].line_number, 120);
+        assert_eq!(lines[1].content, "info 20");
+
+        tokio::fs::remove_dir_all(&dir).await.unwrap();
     }
 
     #[tokio::test]

@@ -65,7 +65,12 @@ impl ReadinessChecker for LogPatternChecker {
         }
 
         let new_bytes = String::from_utf8_lossy(&buf);
-        let found = new_bytes.contains(&self.pattern);
+        // Logs are NDJSON envelopes; match against the decoded content so
+        // anchored patterns and metadata substrings behave correctly.
+        let found = new_bytes.lines().any(|raw| {
+            let (_, _, content) = crate::log_manager::parse_line(raw);
+            content.contains(&self.pattern)
+        });
 
         // Update offset to end of what we just read
         *offset = start + buf.len() as u64;
@@ -124,7 +129,10 @@ impl ReadinessChecker for RegexPatternChecker {
         }
 
         let new_bytes = String::from_utf8_lossy(&buf);
-        let found = self.pattern.is_match(&new_bytes);
+        let found = new_bytes.lines().any(|raw| {
+            let (_, _, content) = crate::log_manager::parse_line(raw);
+            self.pattern.is_match(&content)
+        });
 
         *offset = start + buf.len() as u64;
 

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bgrun_proto::{JobRecord, JobStatus};
+use bgrun_proto::{JobRecord, JobState, JobStatus};
 use crossterm::style::Stylize;
 use std::io::IsTerminal;
 
@@ -23,12 +23,12 @@ fn use_color() -> bool {
     std::io::stdout().is_terminal()
 }
 
-fn color_state(s: &str) -> String {
-    match s {
-        "Ready" | "Exited" => s.green().to_string(),
-        "Running" => s.yellow().to_string(),
-        "Crashed" | "Killed" => s.red().to_string(),
-        _ => s.to_string(),
+fn color_state(state: &JobState) -> String {
+    let s = state.to_string();
+    match state {
+        JobState::Ready | JobState::Exited => s.green().to_string(),
+        JobState::Starting | JobState::Running => s.yellow().to_string(),
+        JobState::Crashed | JobState::Killed => s.red().to_string(),
     }
 }
 
@@ -40,11 +40,11 @@ fn maybe_bold(label: &str) -> String {
     }
 }
 
-fn maybe_color_state(s: &str) -> String {
+fn maybe_color_state(state: &JobState) -> String {
     if use_color() {
-        color_state(s)
+        color_state(state)
     } else {
-        s.to_string()
+        state.to_string()
     }
 }
 
@@ -61,7 +61,7 @@ pub fn print_job(record: &JobRecord, mode: OutputMode) -> Result<()> {
                 b("Pid"),
                 record.pid.map_or("-".into(), |p| p.to_string())
             );
-            println!("{}:    {}", b("State"), maybe_color_state(&record.state.to_string()));
+            println!("{}:    {}", b("State"), maybe_color_state(&record.state));
             println!("{}:  {}", b("Started"), record.started_at);
             println!("{}: {}", b("Workspace"), record.workspace.as_deref().unwrap_or("-"));
             if let Some(port) = record.allocated_port {
@@ -116,7 +116,7 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
                     &record.id
                 };
                 let state = if color {
-                    color_state(&record.state.to_string())
+                    color_state(&record.state)
                 } else {
                     record.state.to_string()
                 };
@@ -145,7 +145,7 @@ pub fn print_status(status: &JobStatus, mode: OutputMode) -> Result<()> {
     match mode {
         OutputMode::Human => {
             let b = |s: &str| maybe_bold(s);
-            println!("{}:      {}", b("State"), maybe_color_state(&status.state.to_string()));
+            println!("{}:      {}", b("State"), maybe_color_state(&status.state));
             println!(
                 "{}:  {}",
                 b("Exit Code"),

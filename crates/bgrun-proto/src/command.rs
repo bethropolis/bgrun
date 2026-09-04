@@ -127,7 +127,16 @@ pub enum Command {
     /// Remove all terminal-state (crashed/exited/killed) jobs.
     Clean { workspace: Option<String> },
     /// Stream log lines in real time (connection-hijacking, like Attach).
-    StreamLogs { id: String },
+    StreamLogs {
+        id: String,
+        /// Byte offset into the log file to replay from. `None` streams only
+        /// live lines (use `Tail` for history) so follow mode never duplicates.
+        cursor: Option<u64>,
+        /// Substring level filter (e.g. "error", "warn").
+        level: Option<String>,
+        /// Regex filter for line content.
+        filter_regex: Option<String>,
+    },
     /// Read the last N lines from the in-memory screen buffer (non-blocking).
     Screen { id: String, lines: usize },
     /// Export (filtered) log history — spanning rotated files — to a file.

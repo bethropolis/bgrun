@@ -88,7 +88,7 @@ impl Job {
     /// Transitions the job to a new state, returning an error if the transition is invalid.
     ///
     /// Valid transitions:
-    /// - Starting -> Running, Ready
+    /// - Starting -> Running, Ready, Exited, Crashed, Killed
     /// - Running -> Ready, Exited, Crashed, Killed
     /// - Ready -> Exited, Crashed, Killed
     pub fn transition(&mut self, next: JobState) -> Result<(), Error> {
@@ -96,6 +96,9 @@ impl Job {
             (&self.state, &next),
             (JobState::Starting, JobState::Running)
                 | (JobState::Starting, JobState::Ready)
+                | (JobState::Starting, JobState::Exited)
+                | (JobState::Starting, JobState::Crashed)
+                | (JobState::Starting, JobState::Killed)
                 | (JobState::Running, JobState::Ready)
                 | (JobState::Running, JobState::Exited)
                 | (JobState::Running, JobState::Crashed)
@@ -275,6 +278,17 @@ mod tests {
         assert_eq!(record.id, "test-id");
         assert_eq!(record.state, JobState::Starting);
         assert!(record.cmd.contains(&"sleep".to_string()));
+    }
+
+    #[test]
+    fn test_transition_starting_to_terminal_states() {
+        // A command that fails to spawn or is killed while still starting
+        // must be able to reach any terminal state directly.
+        for terminal in [JobState::Exited, JobState::Crashed, JobState::Killed] {
+            let mut job = make_job();
+            job.transition(terminal).unwrap();
+            assert!(!job.is_alive());
+        }
     }
 
     #[test]
