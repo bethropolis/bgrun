@@ -204,6 +204,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     job.state = JobState::Running;
     job.readiness = args.readiness.clone();
     job.restart = args.restart.clone();
+    job.max_retries = args.max_retries;
     job.pty = args.pty;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -400,34 +401,72 @@ async fn handle_job_exit(
         info!(id = %id, state = %job.state.to_string(), "job exited");
     }
 
-    // Schedule an OnCrash restart if configured. Shared with the orphan
+    // Schedule a policy restart if configured. Shared with the orphan
     // re-adoption path so a re-adopted job that later crashes still honors
-    // its restart policy (previously it was silently dropped).
-    if let Some(job_ref) = &job {
-        if job_ref.state == JobState::Crashed {
-            schedule_restart_after_crash(id, store.clone()).await;
-        }
+    // its restart policy (previously it was silently dropped). An explicit
+    // user kill (Killed state) never triggers a restart.
+    if let Some(job_ref) = &job
+        && matches!(job_ref.state, JobState::Crashed | JobState::Exited)
+    {
+        schedule_restart(id, store.clone()).await;
     }
 
     LIFECYCLE_NOTIFY.notify_one();
 }
 
-/// If `id` refers to a job in the Crashed state with an OnCrash policy,
+/// Decides whether a terminal state triggers a restart under `policy`.
+/// Returns the base backoff when a restart is warranted. Pure function so
+/// the policy matrix is unit-testable.
+fn restart_trigger(policy: &RestartPolicy, state: &JobState, was_ready: bool) -> Option<u64> {
+    match policy {
+        RestartPolicy::Never => None,
+        RestartPolicy::OnCrash { backoff_ms } => (state == &JobState::Crashed).then_some(*backoff_ms),
+        RestartPolicy::OnFailure { backoff_ms } => {
+            (state == &JobState::Crashed || (state == &JobState::Exited && !was_ready))
+                .then_some(*backoff_ms)
+        }
+        RestartPolicy::Always { backoff_ms } => {
+            matches!(state, JobState::Crashed | JobState::Exited).then_some(*backoff_ms)
+        }
+    }
+}
+
+/// If `id` refers to a job in a terminal state covered by its restart policy,
 /// schedules its re-spawn after the appropriate exponential backoff. Shared by
 /// `handle_job_exit` and the orphan re-adoption path so behavior is identical.
-async fn schedule_restart_after_crash(id: String, store: Arc<Mutex<JobStore>>) {
+async fn schedule_restart(id: String, store: Arc<Mutex<JobStore>>) {
     // Resolve the job once into an owned clone to compute the backoff.
     let job = {
         let store_ref = store.lock().await;
         store_ref.get(&id).cloned()
     };
     let Some(job) = job else { return };
-    if job.state != JobState::Crashed {
+    // An explicit user kill always wins over any restart policy.
+    if job.state == JobState::Killed {
         return;
     }
-    let Some(RestartPolicy::OnCrash { backoff_ms }) = job.restart.clone() else {
+    let Some(ref policy) = job.restart else {
         return;
     };
+    let was_ready = job.ready_at.is_some();
+    let Some(backoff_ms) = restart_trigger(policy, &job.state, was_ready) else {
+        return;
+    };
+
+    // Docker-style max-retries: give up after N consecutive failed attempts.
+    // The counter resets on healthy runs (>10s) below, so this bounds
+    // crash loops, not lifetime restarts.
+    if let Some(max) = job.max_retries
+        && job.consecutive_failures >= max
+    {
+        info!(
+            id = %id,
+            consecutive = job.consecutive_failures,
+            max = max,
+            "not restarting: max retries exhausted"
+        );
+        return;
+    }
 
     let backoff_ms = backoff_ms.max(1_000); // floor at 1s
     let running_10s =
@@ -489,10 +528,10 @@ async fn schedule_restart_after_crash(id: String, store: Arc<Mutex<JobStore>>) {
 }
 
 /// Entry point used by orphan re-adoption: after the orphan monitor has
-/// marked a re-adopted job as Crashed, this schedules its OnCrash restart —
+/// marked a re-adopted job as Crashed, this schedules its policy restart —
 /// the same policy honored for normally-spawned jobs.
 pub async fn handle_adopted_job_crash(id: String, store: Arc<Mutex<JobStore>>) {
-    schedule_restart_after_crash(id, store).await;
+    schedule_restart(id, store).await;
 }
 
 /// Re-spawns a job that previously crashed, using the stored Job data
@@ -519,7 +558,7 @@ fn restart_job(
     };
 
     // Don't re-spawn if the job was killed or manually put into a terminal state
-    if !matches!(job.state, JobState::Crashed) {
+    if !matches!(job.state, JobState::Crashed | JobState::Exited) {
         return;
     }
 
@@ -542,6 +581,7 @@ fn restart_job(
         workspace: job.workspace.clone(),
         readiness: job.readiness.clone(),
         restart: job.restart.clone(),
+        max_retries: job.max_retries,
         pty: job.pty,
         max_runtime_ms: job.max_runtime_ms,
         env: job.env.clone(),
@@ -573,8 +613,26 @@ fn restart_job(
     let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
 
     info!(id = %id, "restarting crashed job");
-    match spawn_job(args, store).await {
-        Ok(_) => info!(id = %id, "restart succeeded"),
+    let prior_restarts = job.restart_count;
+    // Carry the failure streak across the record swap: without this every
+    // generation starts at 0, so neither exponential backoff growth nor the
+    // max-retries gate would ever engage.
+    let prior_failures = job.consecutive_failures;
+    match spawn_job(args, store.clone()).await {
+        Ok(record) => {
+            // Carry the restart count across the record swap so `status`
+            // reports lifetime restarts. Only touch a fresh (count == 0)
+            // record so a raced duplicate keeps its own count.
+            let mut store_ref = store.lock().await;
+            if let Some(j) = store_ref.get_mut(&record.id) {
+                if j.restart_count == 0 {
+                    j.restart_count = prior_restarts + 1;
+                    j.consecutive_failures = prior_failures;
+                    let _ = state::write_status(j).await;
+                }
+            }
+            info!(id = %id, "restart succeeded");
+        }
         Err(e) => error!(id = %id, error = %e, "restart failed"),
     }
     })
@@ -747,6 +805,7 @@ async fn spawn_pty_job(
     job.state = JobState::Running;
     job.readiness = args.readiness.clone();
     job.restart = args.restart.clone();
+    job.max_retries = args.max_retries;
     job.pty = true;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -1481,6 +1540,61 @@ mod tests {
         assert!(!poll_log_for_pattern(&log_path, "nonexistent", 100).await);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn test_restart_trigger_matrix() {
+        use bgrun_proto::JobState;
+        let crashed = JobState::Crashed;
+        let exited = JobState::Exited;
+        let killed = JobState::Killed;
+
+        // Never: nothing restarts.
+        assert_eq!(restart_trigger(&RestartPolicy::Never, &crashed, false), None);
+        assert_eq!(restart_trigger(&RestartPolicy::Never, &exited, true), None);
+
+        // OnCrash: only abnormal death.
+        assert_eq!(
+            restart_trigger(&RestartPolicy::OnCrash { backoff_ms: 1000 }, &crashed, false),
+            Some(1000)
+        );
+        assert_eq!(
+            restart_trigger(&RestartPolicy::OnCrash { backoff_ms: 1000 }, &exited, false),
+            None
+        );
+        assert_eq!(
+            restart_trigger(&RestartPolicy::OnCrash { backoff_ms: 1000 }, &exited, true),
+            None
+        );
+
+        // OnFailure: crash, plus clean exits that never became ready.
+        assert_eq!(
+            restart_trigger(&RestartPolicy::OnFailure { backoff_ms: 2000 }, &crashed, true),
+            Some(2000)
+        );
+        assert_eq!(
+            restart_trigger(&RestartPolicy::OnFailure { backoff_ms: 2000 }, &exited, false),
+            Some(2000)
+        );
+        assert_eq!(
+            restart_trigger(&RestartPolicy::OnFailure { backoff_ms: 2000 }, &exited, true),
+            None
+        );
+
+        // Always: any terminal state except Killed (Killed never reaches here,
+        // but assert the trigger itself excludes nothing it shouldn't).
+        assert_eq!(
+            restart_trigger(&RestartPolicy::Always { backoff_ms: 500 }, &crashed, false),
+            Some(500)
+        );
+        assert_eq!(
+            restart_trigger(&RestartPolicy::Always { backoff_ms: 500 }, &exited, true),
+            Some(500)
+        );
+        assert_eq!(
+            restart_trigger(&RestartPolicy::Always { backoff_ms: 500 }, &killed, false),
+            None
+        );
     }
 
     #[tokio::test]

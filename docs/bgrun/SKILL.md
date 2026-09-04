@@ -65,8 +65,9 @@ bgrun wait <id> --timeout 30s
 | `--ready-when-url <url>` | Wait for HTTP 2xx |
 | `--ready-when-file <path>` | Wait for file to exist |
 | `--after <name>` | Don't start until named job is ready |
-| `--restart on-crash` | Auto-restart on non-zero exit |
-| `--backoff <duration>` | Delay between restarts |
+| `--restart <policy>` | `never` / `on-crash` (non-zero exit) / `on-failure` (also clean exit that never became Ready) / `always`. Explicit `kill` always wins |
+| `--backoff <duration>` | Base delay between restarts (doubles per failure, cap 5m) |
+| `--max-retries <N>` | Give up after N consecutive restarts (resets after healthy run) |
 | `--pty` | Allocate pseudo-terminal |
 | `-e, --env <KEY=VAL>` | Env var for the job (repeatable) |
 | `-C, --cwd <DIR>` | Working directory (default: cwd) |

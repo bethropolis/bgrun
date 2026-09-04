@@ -71,13 +71,17 @@ enum Commands {
         #[arg(long)]
         pty: bool,
 
-        /// Restart policy: "on-crash"
+        /// Restart policy: "never", "on-crash", "on-failure", "always"
         #[arg(long)]
         restart: Option<String>,
 
         /// Backoff duration for restart (e.g. "2s", "5m")
         #[arg(long)]
         backoff: Option<String>,
+
+        /// Max consecutive restart attempts before giving up (docker-style max-retries)
+        #[arg(long = "max-retries")]
+        max_retries: Option<u32>,
 
         /// PTY columns (default 80)
         #[arg(long)]
@@ -381,6 +385,7 @@ async fn main() -> Result<()> {
             pty,
             restart,
             backoff,
+            max_retries,
             cols,
             rows,
             max_rss,
@@ -410,6 +415,7 @@ async fn main() -> Result<()> {
                 pty,
                 restart,
                 backoff,
+                max_retries,
                 pty_cols: cols,
                 pty_rows: rows,
                 max_rss_mb: max_rss,

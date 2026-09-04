@@ -20,6 +20,7 @@ pub struct RunFlags {
     pub pty: bool,
     pub restart: Option<String>,
     pub backoff: Option<String>,
+    pub max_retries: Option<u32>,
     pub pty_cols: Option<u16>,
     pub pty_rows: Option<u16>,
     pub max_rss_mb: Option<u64>,
@@ -139,16 +140,20 @@ pub async fn run(
         .or_else(|| flags.ready_when_url.map(ReadinessStrategy::HttpPoll))
         .or_else(|| flags.ready_when_file.map(ReadinessStrategy::FileExists));
 
-    // Resolve restart policy
+    // Resolve restart policy (backoff shared by all restart-on-exit policies)
+    let backoff_ms = match flags.backoff {
+        Some(ref b) => Some(b.parse::<BgrunDuration>()?.0),
+        None => None,
+    }
+    .unwrap_or(2000);
     let restart = match flags.restart.as_deref() {
-        Some("on-crash") => {
-            let backoff_ms = match flags.backoff {
-                Some(ref b) => Some(b.parse::<BgrunDuration>()?.0),
-                None => None,
-            }.unwrap_or(2000);
-            Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms })
-        }
-        Some(other) => anyhow::bail!("invalid restart policy: {other:?} (expected 'on-crash')"),
+        Some("never") => Some(bgrun_proto::RestartPolicy::Never),
+        Some("on-crash") => Some(bgrun_proto::RestartPolicy::OnCrash { backoff_ms }),
+        Some("on-failure") => Some(bgrun_proto::RestartPolicy::OnFailure { backoff_ms }),
+        Some("always") => Some(bgrun_proto::RestartPolicy::Always { backoff_ms }),
+        Some(other) => anyhow::bail!(
+            "invalid restart policy: {other:?} (expected 'never', 'on-crash', 'on-failure' or 'always')"
+        ),
         None => None,
     };
 
@@ -171,6 +176,7 @@ pub async fn run(
         workspace,
         readiness,
         restart,
+        max_retries: flags.max_retries,
         pty: flags.pty,
         max_runtime_ms: flags.max_runtime_ms,
         env,

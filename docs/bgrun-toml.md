@@ -38,7 +38,8 @@ restart = "on-crash"
 | `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
 | `ready-when-regex` | string | Mark the job `Ready` when a log line matches this regex. CLI flag `--ready-when-regex` takes precedence. |
 | `ready-when-file` | string | Mark the job `Ready` when the given file path exists. |
-| `restart` | string | `"on-crash"` — restart if the process exits with non-zero code or is killed by signal. |
+| `restart` | string | One of `"never"`, `"on-crash"` (non-zero exit / signal death), `"on-failure"` (also clean exits that never became `Ready`), `"always"` (any exit except an explicit kill). Unknown values are an error. |
+| `max-retries` | integer | Give up after this many consecutive restart attempts (counter resets after a healthy run >10s). Unset = retry forever. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
 | `pty` | bool | Allocate a pseudo-terminal for the child process. |

@@ -36,6 +36,8 @@ pub struct JobConfig {
     #[serde(rename = "ready-when-file")]
     pub ready_when_file: Option<String>,
     pub restart: Option<String>,
+    #[serde(rename = "max-retries")]
+    pub max_retries: Option<u32>,
     pub workspace: Option<String>,
     pub after: Option<String>,
     pub pty: Option<bool>,
@@ -66,6 +68,8 @@ pub enum Error {
     JobNotFound(String),
     #[error("config parse error: {0}")]
     ParseError(String),
+    #[error("job '{job}': invalid restart policy '{value}' (expected 'never', 'on-crash', 'on-failure' or 'always')")]
+    InvalidRestartPolicy { job: String, value: String },
 }
 
 /// Parses a bgrun.toml string into a BgrunToml struct (pure, no I/O).
@@ -112,12 +116,23 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
                 .map(|f| ReadinessStrategy::FileExists(f.clone()))
         });
 
-    // Resolve restart policy from config string with optional backoff
+    // Resolve restart policy from config string with optional backoff.
+    // Unknown values are an error (previously they silently disabled
+    // restarts, which hid typos like `restart = "on_crash"`).
     let backoff_ms = job.backoff_ms.unwrap_or(2000);
-    let restart = job.restart.as_deref().and_then(|s| match s {
-        "on-crash" => Some(RestartPolicy::OnCrash { backoff_ms }),
-        _ => None,
-    });
+    let restart = match job.restart.as_deref() {
+        None => None,
+        Some("never") => Some(RestartPolicy::Never),
+        Some("on-crash") => Some(RestartPolicy::OnCrash { backoff_ms }),
+        Some("on-failure") => Some(RestartPolicy::OnFailure { backoff_ms }),
+        Some("always") => Some(RestartPolicy::Always { backoff_ms }),
+        Some(other) => {
+            return Err(Error::InvalidRestartPolicy {
+                job: name.into(),
+                value: other.into(),
+            });
+        }
+    };
 
     // Resolve health check strategy (separate from readiness)
     let health_check = job
@@ -132,6 +147,7 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         workspace: job.workspace.clone(),
         readiness,
         restart,
+        max_retries: job.max_retries,
         pty: job.pty.unwrap_or(false),
         max_runtime_ms: job.max_runtime_ms,
         max_rss_mb: job.max_rss_mb,
@@ -227,6 +243,49 @@ workspace = "myproject"
         let config = parse_config(sample_toml()).unwrap();
         let args = resolve_job_args("reliable", &config).unwrap();
         assert_eq!(args.restart, Some(RestartPolicy::OnCrash { backoff_ms: 2000 }));
+    }
+
+    #[test]
+    fn test_resolve_restart_policies_and_max_retries() {
+        let toml = r#"
+[jobs.a]
+cmd = "true"
+restart = "never"
+
+[jobs.b]
+cmd = "true"
+restart = "on-failure"
+max-retries = 3
+
+[jobs.c]
+cmd = "true"
+restart = "always"
+backoff-ms = 500
+"#;
+        let config = parse_config(toml).unwrap();
+        let a = resolve_job_args("a", &config).unwrap();
+        assert_eq!(a.restart, Some(RestartPolicy::Never));
+        assert_eq!(a.max_retries, None);
+        let b = resolve_job_args("b", &config).unwrap();
+        assert_eq!(
+            b.restart,
+            Some(RestartPolicy::OnFailure { backoff_ms: 2000 })
+        );
+        assert_eq!(b.max_retries, Some(3));
+        let c = resolve_job_args("c", &config).unwrap();
+        assert_eq!(c.restart, Some(RestartPolicy::Always { backoff_ms: 500 }));
+    }
+
+    #[test]
+    fn test_invalid_restart_policy_errors() {
+        let toml = r#"
+[jobs.typo]
+cmd = "true"
+restart = "on_crash"
+"#;
+        let config = parse_config(toml).unwrap();
+        let err = resolve_job_args("typo", &config).unwrap_err();
+        assert!(matches!(err, Error::InvalidRestartPolicy { .. }));
     }
 
     #[test]

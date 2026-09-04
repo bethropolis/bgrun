@@ -27,8 +27,9 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--ready-when-file <PATH>` | Mark job `Ready` when file exists |
 | `--after <NAME>` | Wait for named job to reach `Ready` (or `Exited`/`Crashed`) before spawning |
 | `--pty` | Allocate a pseudo-terminal (useful for processes that buffer output differently with pipes). The PTY is allocated by bgrun's `portable-pty` library. **Known limitation:** programs that open their own PTY (e.g. `podman exec -it`, `ssh`, `docker attach`) may not work with `--pty` because the child's PTY is consumed by the inner command rather than bgrun's PTY master. |
-| `--restart on-crash` | Auto-restart if the process exits non-zero (SIGKILL, crash, non-zero exit) |
-| `--backoff <DURATION>` | Delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`) |
+| `--restart <POLICY>` | Restart policy: `never`, `on-crash` (non-zero exit / signal death), `on-failure` (also clean exits that never became `Ready`), `always` (any exit except an explicit kill). An explicit `kill` always wins. |
+| `--backoff <DURATION>` | Base delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`). Doubles per consecutive failure, capped at 5 min. |
+| `--max-retries <N>` | Give up after N consecutive restart attempts (docker-style max-retries; `0` = never restart). Counter resets after a healthy run (>10s). Unset = retry forever. |
 | `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
 | `--max-runtime <D>` | Kill the job after this duration (e.g. `30s`, `5m`) |
 | `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |
@@ -62,8 +63,8 @@ bgrun run "npm run dev"
 # Named + readiness
 bgrun run --name server --ready-when "listening on" "cargo run"
 
-# With restart
-bgrun run --name worker --restart on-crash --backoff 5s "python worker.py"
+# With restart (3 attempts max, then stays crashed)
+bgrun run --name worker --restart on-failure --max-retries 3 --backoff 5s "python worker.py"
 
 # Depends on another job
 bgrun run --name tests --after server "cargo test"

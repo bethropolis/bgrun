@@ -19,8 +19,10 @@ _bgrun() {
         'stats:Show resource stats for a running job'
         'expect:Wait for a pattern in log output'
         'attach:Attach to a PTY job terminal'
+        'screen:Show last N lines from in-memory buffer'
         'schema:Print JSON Schema for a command'
         'clean:Remove all terminated jobs'
+        'skill:Manage embedded skills'
         'help:Print help'
     )
 
@@ -36,12 +38,12 @@ _bgrun() {
             ;;
         args)
             case "$words[1]" in
-                status|kill|wait|tail|diff|send|stats|expect|attach)
+                status|kill|wait|tail|diff|send|stats|expect|attach|screen)
                     local ids
                     ids=(${(f)"$(_call_program ids bgrun completions --active-ids 2>/dev/null | awk '{print $1}')"})
                     _values 'job id' $ids
                     ;;
-                list|kill)
+                list|kill|clean)
                     _arguments '--workspace[Filter by workspace]:workspace:->workspaces'
                     ;;
                 run)
@@ -55,12 +57,23 @@ _bgrun() {
                         '--ready-when-file=[File existence readiness]:file:' \
                         '--after=[Start after a named job]:name:' \
                         '--pty[Allocate a PTY]' \
-                        '--restart=[Restart policy]:policy:(on-crash)' \
+                        '--restart=[Restart policy]:policy:(never on-crash on-failure always)' \
                         '--backoff=[Backoff duration]:duration:' \
+                        '--max-retries=[Max consecutive restart attempts]:count:' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \
-                        '--max-runtime=[Max runtime]:duration:'
+                        '--max-runtime=[Max runtime]:duration:' \
+                        '--allocate-port=[Allocate free port as env var]:name:' \
+                        '--health-check-url=[Health check HTTP URL]:url:' \
+                        '--health-check-port=[Health check TCP port]:port:' \
+                        '--health-interval=[Health check interval in secs]:seconds:' \
+                        '--health-threshold=[Health check failure threshold]:count:' \
+                        '--env=[Env var KEY=VAL]:kv:' \
+                        '--cwd=[Working directory]:dir:_files -/' \
+                        '--replace[Kill existing same-name job first]' \
+                        '--wait[Block until Ready after starting]' \
+                        '--wait-timeout=[Timeout for --wait]:duration:'
                     ;;
             esac
             ;;

@@ -12,6 +12,10 @@ pub struct RunArgs {
     pub workspace: Option<String>,
     pub readiness: Option<ReadinessStrategy>,
     pub restart: Option<RestartPolicy>,
+    /// Max consecutive restart attempts before giving up (docker-style
+    /// `on-failure[:max-retries]`). None = retry forever.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_retries: Option<u32>,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
     pub env: HashMap<String, String>,

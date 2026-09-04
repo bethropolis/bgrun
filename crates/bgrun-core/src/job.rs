@@ -27,6 +27,7 @@ pub struct Job {
     pub consecutive_failures: u32,
     pub readiness: Option<ReadinessStrategy>,
     pub restart: Option<RestartPolicy>,
+    pub max_retries: Option<u32>,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
     pub max_rss_mb: Option<u64>,
@@ -61,6 +62,7 @@ impl Job {
             consecutive_failures: 0,
             readiness: None,
             restart: None,
+            max_retries: None,
             pty: false,
             max_runtime_ms: None,
             max_rss_mb: None,
@@ -112,7 +114,7 @@ impl Job {
         )
     }
 
-    /// Converts the job into a JobRecord for serialization.
+    /// Converts the job into a `JobRecord` for serialization.
     pub fn to_record(&self) -> bgrun_proto::JobRecord {
         bgrun_proto::JobRecord {
             id: self.id.clone(),
@@ -124,6 +126,7 @@ impl Job {
             started_at: self.started_at.to_rfc3339(),
             readiness: self.readiness.clone(),
             restart: self.restart.clone(),
+            max_retries: self.max_retries,
             pty: self.pty,
             max_runtime_ms: self.max_runtime_ms,
             max_rss_mb: self.max_rss_mb,

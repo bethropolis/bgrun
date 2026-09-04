@@ -20,6 +20,8 @@ pub struct JobRecord {
     pub readiness: Option<ReadinessStrategy>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub restart: Option<RestartPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_retries: Option<u32>,
     #[serde(skip_serializing_if = "is_false", default)]
     pub pty: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]

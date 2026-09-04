@@ -111,8 +111,9 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l ready-when-url -d "HTT
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l ready-when-file -d "File existence readiness"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l after -d "Start after a named job"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l pty -d "Allocate a PTY for the child"
-complete -c bgrun -n "__fish_seen_subcommand_from run" -l restart -d "Restart policy"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l restart -d "Restart policy (never/on-crash/on-failure/always)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l backoff -d "Backoff duration"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-retries -d "Max consecutive restart attempts"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cols -d "PTY columns"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l rows -d "PTY rows"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-rss -d "Max RSS in MB"
@@ -203,7 +204,7 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         clean)
@@ -277,8 +278,9 @@ _bgrun() {
                         '--ready-when-file=[File existence readiness]:file:' \
                         '--after=[Start after a named job]:name:' \
                         '--pty[Allocate a PTY]' \
-                        '--restart=[Restart policy]:policy:(on-crash)' \
+                        '--restart=[Restart policy]:policy:(never on-crash on-failure always)' \
                         '--backoff=[Backoff duration]:duration:' \
+                        '--max-retries=[Max consecutive restart attempts]:count:' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \
