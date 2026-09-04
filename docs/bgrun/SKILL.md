@@ -46,7 +46,7 @@ bgrun wait <id> --timeout 30s
 | `bgrun diff <id>` | New log lines since last call |
 | `bgrun send <id> [data] [--enter]` | Write to stdin |
 | `bgrun stats <id>` | CPU%/RSS/uptime |
-| `bgrun kill <id> [-w <ws>]` | Terminate job(s) |
+| `bgrun kill <id> [-w <ws>] [-f]` | Terminate job(s) (`-f` skips confirmation; non-TTY stdin never prompts) |
 | `bgrun stop <id> [--timeout <d>]` | Graceful stop; also works on terminal jobs to suppress pending restarts |
 | `bgrun restart <id> [--timeout <d>]` | Re-spawn from stored definition (new ID) |
 | `bgrun attach <id>` | Interactive PTY attach |

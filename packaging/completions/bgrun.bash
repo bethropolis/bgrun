@@ -28,7 +28,7 @@ _bgrun()
                     COMPREPLY=($(compgen -W "$ws" -- "$cur"))
                     ;;
                 *)
-                    COMPREPLY=($(compgen -W "--workspace" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--workspace --force" -- "$cur"))
                     ;;
             esac
             ;;

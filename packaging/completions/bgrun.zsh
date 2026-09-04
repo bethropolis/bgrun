@@ -47,7 +47,7 @@ _bgrun() {
                     _values 'job id' $ids
                     ;;
                 list|kill|clean)
-                    _arguments '--workspace[Filter by workspace]:workspace:->workspaces'
+                    _arguments '--workspace[Filter by workspace]:workspace:->workspaces' '--force[Skip confirmation]'
                     ;;
                 run)
                     _arguments \

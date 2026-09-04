@@ -97,6 +97,7 @@ complete -c bgrun -n "__fish_seen_subcommand_from status" -s n -l name -d "Job n
 # Kill flags
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -s n -l name -d "Job name"
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspace to kill"
+complete -c bgrun -n "__fish_seen_subcommand_from kill" -s f -l force -d "Skip confirmation"
 
 # Stop / restart flags
 complete -c bgrun -n "__fish_seen_subcommand_from stop restart" -l timeout -d "Grace period before SIGKILL"

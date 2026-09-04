@@ -319,7 +319,7 @@ If the timeout elapses while the job is still Running:
 Terminate a job by ID, name, or entire workspace.
 
 ```
-bgrun kill [<ID>] [--name <NAME>] [--workspace <WS>]
+bgrun kill [<ID>] [--name <NAME>] [--workspace <WS>] [--force]
 ```
 
 **Flags**
@@ -328,6 +328,7 @@ bgrun kill [<ID>] [--name <NAME>] [--workspace <WS>]
 |---|---|
 | `--name / -n <NAME>` | Job name (alternative to positional ID) |
 | `--workspace <WS>` | Kill all jobs in a workspace |
+| `--force / -f` | Skip the confirmation prompt (also skipped automatically when stdin is not a TTY) |
 
 Sends `SIGTERM` first, then `SIGKILL` after 5 seconds if the process hasn't exited. Sends to the entire process group, so child processes are cleaned up.
 
