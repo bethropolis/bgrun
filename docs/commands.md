@@ -32,6 +32,9 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--max-retries <N>` | Give up after N consecutive restart attempts (docker-style max-retries; `0` = never restart). Counter resets after a healthy run (>10s). Unset = retry forever. |
 | `--log-max-size <SIZE>` | Rotate `stdout.log` past this size (e.g. `10M`, `1G`, default `50M`) |
 | `--log-keep <N>` | Retain N rotated files (`stdout.log.1`…; default 1, minimum 1) |
+| `--memory-max <SIZE>` | Hard memory cap via cgroups v2, e.g. `512M` (Linux only; fails the run if unenforceable) |
+| `--cpu-quota <PCT>` | CPU quota as percent of one CPU, e.g. `50` = half a CPU, `200` = two CPUs (Linux only) |
+| `--pids-max <N>` | Cap tasks (processes + threads) in the job's cgroup (Linux only) |
 | `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
 | `--max-runtime <D>` | Kill the job after this duration (e.g. `30s`, `5m`) |
 | `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |

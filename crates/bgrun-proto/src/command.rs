@@ -22,6 +22,15 @@ pub struct RunArgs {
     /// Number of rotated log files to retain (default 1).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub log_keep: Option<u32>,
+    /// cgroup v2 `memory.max` in bytes (Linux only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub memory_max: Option<u64>,
+    /// cgroup v2 CPU quota as percent of one CPU (Linux only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cpu_quota: Option<u32>,
+    /// cgroup v2 `pids.max` (Linux only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pids_max: Option<u32>,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
     pub env: HashMap<String, String>,

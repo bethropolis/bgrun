@@ -91,6 +91,18 @@ enum Commands {
         #[arg(long = "log-keep")]
         log_keep: Option<u32>,
 
+        /// Hard memory cap via cgroups v2 (e.g. "512M", Linux only)
+        #[arg(long = "memory-max")]
+        memory_max: Option<String>,
+
+        /// CPU quota as percent of one CPU (e.g. 50 = half a CPU, Linux only)
+        #[arg(long = "cpu-quota")]
+        cpu_quota: Option<u32>,
+
+        /// Max tasks (processes+threads) in the job's cgroup (Linux only)
+        #[arg(long = "pids-max")]
+        pids_max: Option<u32>,
+
         /// PTY columns (default 80)
         #[arg(long)]
         cols: Option<u16>,
@@ -455,6 +467,9 @@ async fn main() -> Result<()> {
             max_retries,
             log_max_size,
             log_keep,
+            memory_max,
+            cpu_quota,
+            pids_max,
             cols,
             rows,
             max_rss,
@@ -487,6 +502,9 @@ async fn main() -> Result<()> {
                 max_retries,
                 log_max_size,
                 log_keep,
+                memory_max,
+                cpu_quota,
+                pids_max,
                 pty_cols: cols,
                 pty_rows: rows,
                 max_rss_mb: max_rss,

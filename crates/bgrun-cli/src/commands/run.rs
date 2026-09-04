@@ -23,6 +23,9 @@ pub struct RunFlags {
     pub max_retries: Option<u32>,
     pub log_max_size: Option<String>,
     pub log_keep: Option<u32>,
+    pub memory_max: Option<String>,
+    pub cpu_quota: Option<u32>,
+    pub pids_max: Option<u32>,
     pub pty_cols: Option<u16>,
     pub pty_rows: Option<u16>,
     pub max_rss_mb: Option<u64>,
@@ -164,10 +167,24 @@ pub async fn run(
         Some(ref s) => Some(s.parse::<BgrunSize>()?.0),
         None => None,
     };
-    if let Some(keep) = flags.log_keep {
-        if keep == 0 {
-            anyhow::bail!("invalid --log-keep 0: must retain at least one rotated file");
-        }
+    if let Some(keep) = flags.log_keep
+        && keep == 0
+    {
+        anyhow::bail!("invalid --log-keep 0: must retain at least one rotated file");
+    }
+    let memory_max = match flags.memory_max {
+        Some(ref s) => Some(s.parse::<BgrunSize>()?.0),
+        None => None,
+    };
+    if let Some(pct) = flags.cpu_quota
+        && pct == 0
+    {
+        anyhow::bail!("invalid --cpu-quota 0: must be at least 1 (percent of one CPU)");
+    }
+    if let Some(max) = flags.pids_max
+        && max == 0
+    {
+        anyhow::bail!("invalid --pids-max 0: must allow at least one task");
     }
 
     let args = RunArgs {
@@ -179,6 +196,9 @@ pub async fn run(
         max_retries: flags.max_retries,
         log_max_size,
         log_keep: flags.log_keep,
+        memory_max,
+        cpu_quota: flags.cpu_quota,
+        pids_max: flags.pids_max,
         pty: flags.pty,
         max_runtime_ms: flags.max_runtime_ms,
         env,

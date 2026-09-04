@@ -54,6 +54,7 @@ bgrun wait <id> --timeout 30s
 | `bgrun expect <id> <pattern>` | Wait for log pattern |
 | `bgrun clean [--workspace <ws>]` | Remove all terminated jobs |
 | `bgrun export <id> [--file <p>] [--level <l>] [--since <d>]` | Dump log history (incl. rotated) to a file |
+| `bgrun run --memory-max <size> --cpu-quota <pct> --pids-max <n>` | Hard cgroup v2 caps (Linux; run fails if unenforceable — use `--max-rss` for portable best-effort) |
 | `bgrun run-group <name> [name...]` | Start multiple named jobs in parallel |
 
 ### `bgrun run` flags

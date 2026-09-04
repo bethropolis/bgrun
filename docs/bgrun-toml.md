@@ -42,6 +42,9 @@ restart = "on-crash"
 | `max-retries` | integer | Give up after this many consecutive restart attempts (counter resets after a healthy run >10s). Unset = retry forever. |
 | `log-max-size` | integer or string | Rotate the log past this size: bytes (`52428800`) or human (`"50M"`, `"1G"`). Default 50MB. |
 | `log-keep` | integer | Retain this many rotated files (minimum 1, default 1). |
+| `memory-max` | integer or string | cgroup v2 `memory.max`: bytes or human (`"512M"`). Linux only; the run fails if the kernel won't enforce it. |
+| `cpu-quota` | integer | cgroup v2 CPU quota as percent of one CPU (`50` = half). Linux only. |
+| `pids-max` | integer | cgroup v2 `pids.max`. Linux only. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
 | `pty` | bool | Allocate a pseudo-terminal for the child process. |

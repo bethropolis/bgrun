@@ -180,6 +180,32 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         STDIN_HANDLES.lock().await.insert(id.clone(), stdin);
     }
 
+    // Hard resource limits via cgroups v2 (fail loud, never silently unlimited).
+    #[cfg(target_os = "linux")]
+    {
+        let limits = bgrun_daemon::cgroup::Limits {
+            memory_max: args.memory_max,
+            cpu_quota_pct: args.cpu_quota,
+            pids_max: args.pids_max,
+        };
+        if !limits.is_empty() {
+            if let Err(e) = bgrun_daemon::cgroup::setup_job_group(&id, pid, &limits) {
+                let _ = child.kill().await;
+                STDIN_HANDLES.lock().await.remove(&id);
+                let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+                anyhow::bail!("{e:#}");
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if args.memory_max.is_some() || args.cpu_quota.is_some() || args.pids_max.is_some() {
+            anyhow::bail!(
+                "resource limits (--memory-max/--cpu-quota/--pids-max) require Linux with cgroups v2"
+            );
+        }
+    }
+
     // Per-job log rotation settings, shared by both capture tasks.
     let rotation = bgrun_daemon::log_manager::RotationConfig::from_job(
         args.log_max_size,
@@ -213,6 +239,9 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     job.max_retries = args.max_retries;
     job.log_max_size = args.log_max_size;
     job.log_keep = args.log_keep;
+    job.memory_max = args.memory_max;
+    job.cpu_quota = args.cpu_quota;
+    job.pids_max = args.pids_max;
     job.pty = args.pty;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -398,6 +427,11 @@ async fn handle_job_exit(
     LOG_BROADCASTS.lock().await.remove(&id);
     LOG_WRITE_LOCKS.lock().await.remove(&id);
     SCREEN_BUFFERS.lock().await.remove(&id);
+    // Drop the job's cgroup (empty now that its processes are gone).
+    #[cfg(target_os = "linux")]
+    {
+        bgrun_daemon::cgroup::remove_job_group(&id);
+    }
 
     // Persist status
     let job = {
@@ -609,6 +643,9 @@ fn run_args_from_job(job: &Job) -> RunArgs {
         max_retries: job.max_retries,
         log_max_size: job.log_max_size,
         log_keep: job.log_keep,
+        memory_max: job.memory_max,
+        cpu_quota: job.cpu_quota,
+        pids_max: job.pids_max,
         pty: job.pty,
         max_runtime_ms: job.max_runtime_ms,
         env: job.env.clone(),
@@ -649,6 +686,10 @@ async fn swap_record(
         store.remove(old_id);
     }
     let _ = tokio::fs::remove_dir_all(state::job_dir(old_id)).await;
+    #[cfg(target_os = "linux")]
+    {
+        bgrun_daemon::cgroup::remove_job_group(old_id);
+    }
 
     let record = spawn_job(args, store.clone()).await?;
     {
@@ -792,6 +833,31 @@ async fn spawn_pty_job(
         .process_id()
         .ok_or_else(|| anyhow::anyhow!("PTY child did not report a pid"))?;
 
+    // Hard resource limits via cgroups v2 (fail loud, never silently unlimited).
+    #[cfg(target_os = "linux")]
+    {
+        let limits = bgrun_daemon::cgroup::Limits {
+            memory_max: args.memory_max,
+            cpu_quota_pct: args.cpu_quota,
+            pids_max: args.pids_max,
+        };
+        if !limits.is_empty() {
+            if let Err(e) = bgrun_daemon::cgroup::setup_job_group(&id, pid, &limits) {
+                let _ = child.kill();
+                let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+                anyhow::bail!("{e:#}");
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if args.memory_max.is_some() || args.cpu_quota.is_some() || args.pids_max.is_some() {
+            anyhow::bail!(
+                "resource limits (--memory-max/--cpu-quota/--pids-max) require Linux with cgroups v2"
+            );
+        }
+    }
+
     // Clone the PTY master reader for output capture (sync reads)
     let reader = master
         .try_clone_reader()
@@ -842,6 +908,9 @@ async fn spawn_pty_job(
     job.max_retries = args.max_retries;
     job.log_max_size = args.log_max_size;
     job.log_keep = args.log_keep;
+    job.memory_max = args.memory_max;
+    job.cpu_quota = args.cpu_quota;
+    job.pids_max = args.pids_max;
     job.pty = true;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -1788,6 +1857,9 @@ mod tests {
         job.readiness = Some(bgrun_proto::ReadinessStrategy::TcpPort(3000));
         job.restart = Some(RestartPolicy::OnFailure { backoff_ms: 1500 });
         job.max_retries = Some(3);
+        job.memory_max = Some(512 * 1024 * 1024);
+        job.cpu_quota = Some(50);
+        job.pids_max = Some(64);
         job.pty = true;
         job.max_runtime_ms = Some(60_000);
         job.max_rss_mb = Some(512);
@@ -1801,6 +1873,9 @@ mod tests {
         assert_eq!(args.readiness, job.readiness);
         assert_eq!(args.restart, job.restart);
         assert_eq!(args.max_retries, job.max_retries);
+        assert_eq!(args.memory_max, job.memory_max);
+        assert_eq!(args.cpu_quota, job.cpu_quota);
+        assert_eq!(args.pids_max, job.pids_max);
         assert_eq!(args.pty, job.pty);
         assert_eq!(args.max_runtime_ms, job.max_runtime_ms);
         assert_eq!(args.max_rss_mb, job.max_rss_mb);

@@ -33,7 +33,7 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --memory-max --cpu-quota --pids-max --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         stop|restart)

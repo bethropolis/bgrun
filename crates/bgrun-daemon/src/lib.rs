@@ -1,4 +1,6 @@
 pub mod audit;
+#[cfg(target_os = "linux")]
+pub mod cgroup;
 pub mod log_manager;
 pub mod orphan;
 pub mod readiness;

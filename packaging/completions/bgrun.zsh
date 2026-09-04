@@ -65,6 +65,9 @@ _bgrun() {
                         '--max-retries=[Max consecutive restart attempts]:count:' \
                         '--log-max-size=[Rotate log past this size]:size:' \
                         '--log-keep=[Rotated log files to retain]:count:' \
+                        '--memory-max=[cgroup memory cap (Linux)]:size:' \
+                        '--cpu-quota=[cgroup CPU percent (Linux)]:percent:' \
+                        '--pids-max=[cgroup task cap (Linux)]:count:' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \

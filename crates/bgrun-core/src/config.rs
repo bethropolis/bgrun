@@ -81,6 +81,12 @@ pub struct JobConfig {
     pub log_max_size: Option<TomlSize>,
     #[serde(rename = "log-keep")]
     pub log_keep: Option<u32>,
+    #[serde(rename = "memory-max")]
+    pub memory_max: Option<TomlSize>,
+    #[serde(rename = "cpu-quota")]
+    pub cpu_quota: Option<u32>,
+    #[serde(rename = "pids-max")]
+    pub pids_max: Option<u32>,
     pub workspace: Option<String>,
     pub after: Option<String>,
     pub pty: Option<bool>,
@@ -194,6 +200,21 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
             "job '{name}': log-keep must be at least 1"
         )));
     }
+    let memory_max = job
+        .memory_max
+        .as_ref()
+        .map(TomlSize::bytes)
+        .transpose()?;
+    if job.cpu_quota == Some(0) {
+        return Err(Error::ParseError(format!(
+            "job '{name}': cpu-quota must be at least 1"
+        )));
+    }
+    if job.pids_max == Some(0) {
+        return Err(Error::ParseError(format!(
+            "job '{name}': pids-max must be at least 1"
+        )));
+    }
 
     Ok(RunArgs {
         cmd,
@@ -204,6 +225,9 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         max_retries: job.max_retries,
         log_max_size,
         log_keep: job.log_keep,
+        memory_max,
+        cpu_quota: job.cpu_quota,
+        pids_max: job.pids_max,
         pty: job.pty.unwrap_or(false),
         max_runtime_ms: job.max_runtime_ms,
         max_rss_mb: job.max_rss_mb,
@@ -351,6 +375,31 @@ log-max-size = 4096
         let b = resolve_job_args("b", &config).unwrap();
         assert_eq!(b.log_max_size, Some(4096));
         assert_eq!(b.log_keep, None);
+    }
+
+    #[test]
+    fn test_resolve_resource_limits() {
+        let toml = r#"
+[jobs.limited]
+cmd = "true"
+memory-max = "512M"
+cpu-quota = 50
+pids-max = 64
+"#;
+        let config = parse_config(toml).unwrap();
+        let args = resolve_job_args("limited", &config).unwrap();
+        assert_eq!(args.memory_max, Some(512 * 1024 * 1024));
+        assert_eq!(args.cpu_quota, Some(50));
+        assert_eq!(args.pids_max, Some(64));
+    }
+
+    #[test]
+    fn test_invalid_resource_limits_error() {
+        for (key, val) in [("cpu-quota", "0"), ("pids-max", "0")] {
+            let toml = format!("[jobs.bad]\ncmd = \"true\"\n{key} = {val}\n");
+            let config = parse_config(&toml).unwrap();
+            assert!(resolve_job_args("bad", &config).is_err(), "{key} = 0 must fail");
+        }
     }
 
     #[test]
