@@ -88,7 +88,11 @@ impl JobStore {
     pub fn remove(&mut self, id: &str) -> Option<Job> {
         if let Some(job) = self.jobs.remove(id) {
             if let Some(ref name) = job.name {
-                self.name_index.remove(name);
+                // Only clear the name index when it still points at the job
+                // being removed; a newer job may have claimed the same name.
+                if self.name_index.get(name).map(String::as_str) == Some(id) {
+                    self.name_index.remove(name);
+                }
             }
             Some(job)
         } else {

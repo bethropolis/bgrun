@@ -1,18 +1,31 @@
 use anyhow::Result;
 use bgrun_proto::{Command, KillArgs};
 use inquire::Confirm;
+use std::io::IsTerminal;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Kills a job or all jobs in a workspace.
-pub async fn kill(id: Option<String>, workspace: Option<String>, json: bool) -> Result<()> {
+pub async fn kill(
+    id: Option<String>,
+    workspace: Option<String>,
+    force: bool,
+    json: bool,
+) -> Result<()> {
     if id.is_none() && workspace.is_none() {
         anyhow::bail!("either --id or --workspace must be specified");
     }
 
-    if workspace.is_some() && output_mode(json) == crate::output::OutputMode::Human {
+    // Confirmation is skipped with --force or when stdin isn't a TTY (CI,
+    // scripts, AI agents) — prompting there would crash with NotTTY.
+    let interactive = std::io::stdin().is_terminal();
+    if workspace.is_some()
+        && !force
+        && interactive
+        && output_mode(json) == crate::output::OutputMode::Human
+    {
         let confirm = Confirm::new("Kill all jobs in this workspace?")
             .with_default(false)
             .prompt()?;

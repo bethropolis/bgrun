@@ -225,7 +225,8 @@ async fn job_menu(record: JobRecord) -> Result<()> {
                     .with_default(false)
                     .prompt_skippable()?;
                 if confirm.unwrap_or(false) {
-                    let _ = crate::commands::kill::kill(Some(id.clone()), None, false).await;
+                    let _ =
+                        crate::commands::kill::kill(Some(id.clone()), None, true, false).await;
                     break;
                 }
             }

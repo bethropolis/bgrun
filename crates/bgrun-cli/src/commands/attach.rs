@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use bgrun_proto::Command;
-use crossterm::event::{Event, EventStream};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use futures_util::StreamExt;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -101,15 +99,25 @@ async fn run_attach_loop(
         Ok(())
     });
 
-    // Spawn background task to monitor terminal window resizing
+    // Spawn background task to monitor terminal window resizing via SIGWINCH.
+    // Using a signal (instead of crossterm's EventStream) keeps stdin
+    // exclusively owned by forward_stdin — EventStream also reads stdin to
+    // parse escape sequences, racing with and swallowing user keystrokes.
     let id_clone = id.clone();
     let socket_path_clone = socket_path.clone();
     let resize_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-        let mut reader = EventStream::new();
+        let mut winch = match tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::window_change(),
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
 
-        while let Some(Ok(event)) = reader.next().await {
-            if let Event::Resize(cols, rows) = event {
-                if let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path_clone).await {
+        while winch.recv().await.is_some() {
+            if let Ok((cols, rows)) = crossterm::terminal::size() {
+                if let Ok(mut client) =
+                    crate::client::DaemonClient::connect(&socket_path_clone).await
+                {
                     let _ = client
                         .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
                             id: id_clone.clone(),

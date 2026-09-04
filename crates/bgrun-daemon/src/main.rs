@@ -87,6 +87,14 @@ async fn main() -> Result<()> {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
 
+        // 0 disables auto-shutdown entirely: the daemon stays up even when
+        // idle. Waiting forever here achieves that without a busy loop.
+        if timeout_seconds == 0 {
+            tracing::info!("idle timeout disabled (BGRUN_IDLE_TIMEOUT=0)");
+            shutdown_monitor.cancelled().await;
+            return;
+        }
+
         tracing::info!(
             timeout_secs = timeout_seconds,
             "reactive auto-shutdown monitor initialized (0% idle polling)"

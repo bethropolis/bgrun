@@ -189,6 +189,10 @@ enum Commands {
         /// Kill all jobs in a workspace
         #[arg(long)]
         workspace: Option<String>,
+
+        /// Skip the confirmation prompt (implies yes in non-interactive use)
+        #[arg(short = 'f', long)]
+        force: bool,
     },
 
     /// Gracefully stop a job (SIGTERM, escalating to SIGKILL).
@@ -529,14 +533,19 @@ async fn main() -> Result<()> {
             let id = resolve_id_or_name(id, name, "status")?;
             commands::status::status(id, json).await?;
         }
-        Some(Commands::Kill { id, name, workspace }) => {
+        Some(Commands::Kill {
+            id,
+            name,
+            workspace,
+            force,
+        }) => {
             let id = match (id, name) {
                 (Some(_), Some(_)) => anyhow::bail!("kill: specify either a positional ID or --name, not both"),
                 (Some(id), None) => Some(id),
                 (None, Some(name)) => Some(name),
                 (None, None) => None,
             };
-            commands::kill::kill(id, workspace, json).await?;
+            commands::kill::kill(id, workspace, force, json).await?;
         }
         Some(Commands::Stop { id, timeout }) => {
             commands::stop::stop(id, timeout, json).await?;
