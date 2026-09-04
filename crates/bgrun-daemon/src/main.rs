@@ -56,7 +56,9 @@ async fn main() -> Result<()> {
     // Create shutdown token for coordinated cancellation
     let shutdown = CancellationToken::new();
 
-    // Signal handler: catch SIGTERM, SIGINT (Ctrl+C), SIGHUP
+    // Signal handler: catch SIGTERM, SIGINT (Ctrl+C). SIGHUP is deliberately
+    // swallowed (not shutdown): a background runner must survive terminal
+    // closure / SSH disconnects so its jobs keep running.
     let sig_shutdown = shutdown.clone();
     tokio::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};
@@ -65,10 +67,20 @@ async fn main() -> Result<()> {
         let mut int = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
         let mut hup = signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
 
+        tokio::spawn(async move {
+            // Drain SIGHUP forever; the default terminate action is replaced
+            // by installing this handler.
+            loop {
+                if hup.recv().await.is_none() {
+                    break;
+                }
+                tracing::info!("received SIGHUP (ignored, jobs keep running)");
+            }
+        });
+
         tokio::select! {
             _ = term.recv() => tracing::info!("received SIGTERM"),
             _ = int.recv() => tracing::info!("received SIGINT"),
-            _ = hup.recv() => tracing::info!("received SIGHUP"),
         }
 
         tracing::info!("shutdown signal received, killing all jobs");

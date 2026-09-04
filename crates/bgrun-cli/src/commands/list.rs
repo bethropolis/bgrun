@@ -21,7 +21,10 @@ pub async fn list(workspace: Option<String>, json: bool) -> Result<()> {
         anyhow::bail!("list: {err}");
     }
 
-    let records = response.data.unwrap_or_default();
+    let mut records = response.data.unwrap_or_default();
+    // HashMap-backed store yields nondeterministic order; sort by start time
+    // so both human and JSON output are stable across invocations.
+    records.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     print_jobs(&records, output_mode(json))?;
 
     Ok(())
