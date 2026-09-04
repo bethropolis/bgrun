@@ -7,9 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-mod runner;
-mod server;
-mod state;
+use bgrun_daemon::{runner, server, state};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -82,7 +80,7 @@ async fn main() -> Result<()> {
     let socket_path_clone = socket_path.clone();
     let shutdown_monitor = shutdown.clone();
     tokio::spawn(async move {
-        use crate::runner::LIFECYCLE_NOTIFY;
+        use bgrun_daemon::state::LIFECYCLE_NOTIFY;
 
         let timeout_seconds = std::env::var("BGRUN_IDLE_TIMEOUT")
             .ok()

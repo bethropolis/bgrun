@@ -183,13 +183,13 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     // Hard resource limits via cgroups v2 (fail loud, never silently unlimited).
     #[cfg(target_os = "linux")]
     {
-        let limits = bgrun_daemon::cgroup::Limits {
+        let limits = crate::cgroup::Limits {
             memory_max: args.memory_max,
             cpu_quota_pct: args.cpu_quota,
             pids_max: args.pids_max,
         };
         if !limits.is_empty() {
-            if let Err(e) = bgrun_daemon::cgroup::setup_job_group(&id, pid, &limits) {
+            if let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
                 let _ = child.kill().await;
                 STDIN_HANDLES.lock().await.remove(&id);
                 let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
@@ -207,7 +207,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     }
 
     // Per-job log rotation settings, shared by both capture tasks.
-    let rotation = bgrun_daemon::log_manager::RotationConfig::from_job(
+    let rotation = crate::log_manager::RotationConfig::from_job(
         args.log_max_size,
         args.log_keep,
     );
@@ -291,11 +291,11 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
 
     // Spawn readiness loop if configured (fixed 60s timeout, independent of max_runtime)
     if let Some(ref strategy) = args.readiness {
-        let checker = bgrun_daemon::readiness::build_checker(strategy, &job_dir);
+        let checker = crate::readiness::build_checker(strategy, &job_dir);
         let store_clone = store.clone();
         let id_clone = id.clone();
         tokio::spawn(async move {
-            bgrun_daemon::readiness::readiness_loop(id_clone, store_clone, checker, 60_000).await;
+            crate::readiness::readiness_loop(id_clone, store_clone, checker, 60_000).await;
         });
     }
 
@@ -336,7 +336,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
 
     // Spawn health check loop if configured
     if let Some(ref strategy) = args.health_check {
-        let checker = bgrun_daemon::readiness::build_checker(strategy, &job_dir);
+        let checker = crate::readiness::build_checker(strategy, &job_dir);
         let store_clone = store.clone();
         let id_clone = id.clone();
         let interval = args.health_interval_secs.unwrap_or(10);
@@ -430,7 +430,7 @@ async fn handle_job_exit(
     // Drop the job's cgroup (empty now that its processes are gone).
     #[cfg(target_os = "linux")]
     {
-        bgrun_daemon::cgroup::remove_job_group(&id);
+        crate::cgroup::remove_job_group(&id);
     }
 
     // Persist status
@@ -688,7 +688,7 @@ async fn swap_record(
     let _ = tokio::fs::remove_dir_all(state::job_dir(old_id)).await;
     #[cfg(target_os = "linux")]
     {
-        bgrun_daemon::cgroup::remove_job_group(old_id);
+        crate::cgroup::remove_job_group(old_id);
     }
 
     let record = spawn_job(args, store.clone()).await?;
@@ -836,13 +836,13 @@ async fn spawn_pty_job(
     // Hard resource limits via cgroups v2 (fail loud, never silently unlimited).
     #[cfg(target_os = "linux")]
     {
-        let limits = bgrun_daemon::cgroup::Limits {
+        let limits = crate::cgroup::Limits {
             memory_max: args.memory_max,
             cpu_quota_pct: args.cpu_quota,
             pids_max: args.pids_max,
         };
         if !limits.is_empty() {
-            if let Err(e) = bgrun_daemon::cgroup::setup_job_group(&id, pid, &limits) {
+            if let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
                 let _ = child.kill();
                 let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
                 anyhow::bail!("{e:#}");
@@ -885,7 +885,7 @@ async fn spawn_pty_job(
         .await
         .insert(id.clone(), tx.clone());
 
-    let rotation = bgrun_daemon::log_manager::RotationConfig::from_job(
+    let rotation = crate::log_manager::RotationConfig::from_job(
         args.log_max_size,
         args.log_keep,
     );
@@ -957,11 +957,11 @@ async fn spawn_pty_job(
 
     // Spawn readiness loop if configured
     if let Some(ref strategy) = args.readiness {
-        let checker = bgrun_daemon::readiness::build_checker(strategy, &job_dir);
+        let checker = crate::readiness::build_checker(strategy, &job_dir);
         let store_clone = store.clone();
         let id_clone = id.clone();
         tokio::spawn(async move {
-            bgrun_daemon::readiness::readiness_loop(id_clone, store_clone, checker, 60_000).await;
+            crate::readiness::readiness_loop(id_clone, store_clone, checker, 60_000).await;
         });
     }
 
@@ -1001,7 +1001,7 @@ async fn spawn_pty_job(
 
     // Spawn health check loop if configured
     if let Some(ref strategy) = args.health_check {
-        let checker = bgrun_daemon::readiness::build_checker(strategy, &job_dir);
+        let checker = crate::readiness::build_checker(strategy, &job_dir);
         let store_clone = store.clone();
         let id_clone = id.clone();
         let interval = args.health_interval_secs.unwrap_or(10);
@@ -1387,7 +1387,7 @@ async fn monitor_memory_limit(
 async fn monitor_health_loop(
     id: String,
     store: Arc<Mutex<JobStore>>,
-    checker: Box<dyn bgrun_daemon::readiness::ReadinessChecker>,
+    checker: Box<dyn crate::readiness::ReadinessChecker>,
     interval_secs: u64,
     threshold: u32,
 ) {
@@ -1440,7 +1440,7 @@ async fn capture_output(
     log_path: std::path::PathBuf,
     id: &str,
     label: &str,
-    rotation: bgrun_daemon::log_manager::RotationConfig,
+    rotation: crate::log_manager::RotationConfig,
 ) {
     use tokio::io::AsyncReadExt;
 
@@ -1485,7 +1485,7 @@ async fn capture_output(
                 if let Ok(meta) = tokio::fs::metadata(&log_path).await {
                     if meta.len() > rotation.max_bytes
                         && let Ok(rotated) =
-                            bgrun_daemon::log_manager::rotate_if_needed(id, &rotation).await
+                            crate::log_manager::rotate_if_needed(id, &rotation).await
                         && rotated
                     {
                         if let Ok(new_file) = tokio::fs::OpenOptions::new()
@@ -1547,7 +1547,7 @@ async fn write_ts_line(
         .to_string();
     let cleaned = scrub_terminal_noise(&content);
     let content_for_broadcast = cleaned.clone();
-    let entry = bgrun_daemon::log_manager::DiskLogEntry {
+    let entry = crate::log_manager::DiskLogEntry {
         t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         s: label.to_string(),
         c: cleaned,
@@ -1603,7 +1603,7 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
         .to_string();
     let cleaned = scrub_terminal_noise(&content);
     let content_for_broadcast = cleaned.clone();
-    let entry = bgrun_daemon::log_manager::DiskLogEntry {
+    let entry = crate::log_manager::DiskLogEntry {
         t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         s: "pty".to_string(),
         c: cleaned,
@@ -1653,7 +1653,7 @@ fn capture_pty_output(
     log_path: &std::path::Path,
     id: &str,
     broadcast_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
-    rotation: bgrun_daemon::log_manager::RotationConfig,
+    rotation: crate::log_manager::RotationConfig,
 ) {
     use std::io::Read;
 
@@ -1708,7 +1708,7 @@ fn capture_pty_output(
                     if meta.len() > rotation.max_bytes {
                         let dir = log_path.parent();
                         let rotated = dir.is_some_and(|d| {
-                            bgrun_daemon::log_manager::rotate_files_blocking(d, &rotation)
+                            crate::log_manager::rotate_files_blocking(d, &rotation)
                                 .unwrap_or(false)
                         });
                         if rotated {

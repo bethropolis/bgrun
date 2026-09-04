@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -21,12 +22,19 @@ pub async fn run_server(
     // Remove old socket file if it exists
     let _ = tokio::fs::remove_file(&socket_path).await;
 
-    // Ensure parent directory exists
+    // Ensure parent directory exists with private permissions (0700). A
+    // shared /tmp fallback means any local user could otherwise reach the
+    // socket and dispatch commands under the daemon user's account.
     if let Some(parent) = socket_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        ensure_private_dir(parent)?;
     }
 
     let listener = UnixListener::bind(&socket_path)?;
+    // Restrict the socket itself so only the owning user can connect.
+    let _ = std::fs::set_permissions(
+        &socket_path,
+        std::fs::Permissions::from_mode(0o600),
+    );
     info!("daemon listening on {}", socket_path.display());
 
     loop {
@@ -54,6 +62,43 @@ pub async fn run_server(
         }
     }
 
+    Ok(())
+}
+
+/// Creates `path` with mode `0700`, or hardens an already-existing directory.
+///
+/// Rejects pre-existing directories that are symlinks (TOCTOU/planting
+/// attacks in shared temp directories) or owned by a different user.
+fn ensure_private_dir(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", path.display()))?;
+
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| anyhow::anyhow!("failed to stat {}: {e}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "refusing to use {}: it is a symlink",
+            path.display()
+        );
+    }
+    #[allow(unsafe_code)]
+    {
+        let uid = unsafe { libc::getuid() };
+        if meta.uid() != uid {
+            anyhow::bail!(
+                "refusing to use {}: owned by uid {} (expected {uid})",
+                path.display(),
+                meta.uid()
+            );
+        }
+    }
+    // Tighten in case the directory pre-existed with lax permissions.
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
     Ok(())
 }
 
@@ -328,7 +373,7 @@ async fn handle_stream_logs(
         content
             .lines()
             .filter_map(|raw| {
-                let (timestamp, _stream, content) = bgrun_daemon::log_manager::parse_line(raw);
+                let (timestamp, _stream, content) = crate::log_manager::parse_line(raw);
                 Some(LogLine {
                     line_number: 0,
                     content,
@@ -608,11 +653,11 @@ async fn dispatch(
             let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
             let regex_deref = regex_ref.as_ref();
             if digest {
-                match bgrun_daemon::log_manager::tail_digest(&job_id).await {
+                match crate::log_manager::tail_digest(&job_id).await {
                     Ok(digest) => {
                         // If --lines is also specified, include the last N lines
                         if lines > 0 {
-                            match bgrun_daemon::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
+                            match crate::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
                                 Ok(mut log_lines) => {
                                     if strip_ansi {
                                         for line in &mut log_lines {
@@ -645,7 +690,7 @@ async fn dispatch(
                 }
             } else if let Some(cursor) = cursor_opt {
                 // Cursor-based read for follow mode
-                match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream_deref, level_deref, regex_deref).await {
+                match crate::log_manager::diff_since(&job_id, cursor, stream_deref, level_deref, regex_deref).await {
                     Ok((mut log_lines, new_cursor)) => {
                         // Strip ANSI escape codes if requested
                         if strip_ansi {
@@ -668,7 +713,7 @@ async fn dispatch(
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
             } else {
-                match bgrun_daemon::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
+                match crate::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
                     Ok(mut log_lines) => {
                         // Strip ANSI escape codes if requested
                         if strip_ansi {
@@ -678,7 +723,7 @@ async fn dispatch(
                             }
                         }
                         // Get file size for cursor if follow mode
-                        let log_path = bgrun_daemon::state::job_dir(&job_id).join("stdout.log");
+                        let log_path = crate::state::job_dir(&job_id).join("stdout.log");
                         let file_size = get_file_size(&log_path).await;
                         let mut result = serde_json::json!({
                             "lines": log_lines,
@@ -714,7 +759,7 @@ async fn dispatch(
                 }
             };
             let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
-            match bgrun_daemon::log_manager::diff_since(&job_id, cursor, stream.as_deref(), None, regex_ref.as_ref()).await {
+            match crate::log_manager::diff_since(&job_id, cursor, stream.as_deref(), None, regex_ref.as_ref()).await {
                 Ok((mut log_lines, new_cursor)) => {
                     // `new_cursor` is the byte-offset cursor returned by
                     // diff_since. We always store it verbatim, so the next
@@ -739,7 +784,7 @@ async fn dispatch(
                     {
                         let store_ref = store.lock().await;
                         if let Some(job) = store_ref.get(&job_id) {
-                            let _ = bgrun_daemon::state::write_status(job).await;
+                            let _ = crate::state::write_status(job).await;
                         }
                     }
                     // Strip ANSI escape codes if requested
@@ -806,7 +851,7 @@ async fn dispatch(
                 }
             };
 
-            let log_path = bgrun_daemon::state::job_dir(&job_id).join("stdout.log");
+            let log_path = crate::state::job_dir(&job_id).join("stdout.log");
             let mut cursor = get_file_size(&log_path).await;
             let mut line_offset = count_lines_up_to(&log_path, cursor).await;
 
@@ -932,7 +977,7 @@ async fn dispatch(
             let count = to_remove.len();
             for id in &to_remove {
                 store.lock().await.remove(id);
-                let _ = tokio::fs::remove_dir_all(bgrun_daemon::state::job_dir(id)).await;
+                let _ = tokio::fs::remove_dir_all(crate::state::job_dir(id)).await;
             }
             info!(count = %count, "cleaned terminal-state jobs");
             Response::ok(req_id.clone(), serde_json::json!({"removed": count}))
@@ -994,7 +1039,7 @@ async fn dispatch(
                     Some(job) => (
                         job.id.clone(),
                         job.log_keep
-                            .unwrap_or(bgrun_daemon::log_manager::RotationConfig::default().keep),
+                            .unwrap_or(crate::log_manager::RotationConfig::default().keep),
                     ),
                     None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
                 }
@@ -1012,7 +1057,7 @@ async fn dispatch(
                 },
                 None => None,
             };
-            let opts = bgrun_daemon::log_manager::ExportOpts {
+            let opts = crate::log_manager::ExportOpts {
                 out_path: std::path::PathBuf::from(path),
                 lines,
                 level,
@@ -1021,8 +1066,8 @@ async fn dispatch(
                 filter_regex: regex,
                 since_ms,
             };
-            match bgrun_daemon::log_manager::export_logs(
-                &bgrun_daemon::state::job_dir(&job_id),
+            match crate::log_manager::export_logs(
+                &crate::state::job_dir(&job_id),
                 keep,
                 &opts,
             )
@@ -1040,7 +1085,7 @@ async fn dispatch(
     // Record audit entry with a concise args summary
     let ok = resp.ok;
     let err_msg = resp.error.as_deref();
-    bgrun_daemon::audit::record(&cmd_name, &audit_args, ok, err_msg).await;
+    crate::audit::record(&cmd_name, &audit_args, ok, err_msg).await;
 
     match serde_json::to_value(&resp) {
         Ok(val) => val,
