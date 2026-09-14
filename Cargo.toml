@@ -54,3 +54,20 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
+# Structural pedantic noise: RPC dispatchers are intentionally one long match;
+# splitting them would hurt readability.
+too_many_lines = "allow"
+# POSIX APIs take i32 pids/signals; file sizes are bounded on 64-bit hosts.
+cast_possible_wrap = "allow"
+cast_possible_truncation = "allow"
+# Persistent state (daemon dirs, job dirs) shadows common short names.
+similar_names = "allow"
+# The Command enum needs its data variants inline for serde clarity.
+large_enum_variant = "allow"
+# Long-form CLI commands (run/tail/export) legitimately carry many flags.
+too_many_arguments = "allow"
+fn_params_excessive_bools = "allow"
+# Byte counting via filter is clear enough; the bytecount crate is overkill.
+naive_bytecount = "allow"
+# Helper closures defined near their use site read better than hoisting them.
+items_after_statements = "allow"

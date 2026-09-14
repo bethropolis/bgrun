@@ -20,19 +20,18 @@ pub async fn completions(
             "fish" => print_fish_completions(),
             "bash" => print_bash_completions(),
             "zsh" => print_zsh_completions(),
-            other => anyhow::bail!("unsupported shell: '{}'. Supported: fish, bash, zsh", other),
+            other => anyhow::bail!("unsupported shell: '{other}'. Supported: fish, bash, zsh"),
         }
         return Ok(());
     }
 
     // Dynamic data generation (original behavior)
     let socket_path = bgrun_proto::paths::socket_path();
-    if let Ok(mut client) = DaemonClient::connect(&socket_path).await {
-        if let Ok(response) = client
+    if let Ok(mut client) = DaemonClient::connect(&socket_path).await
+        && let Ok(response) = client
             .send::<Vec<JobRecord>>(Command::List { workspace: None })
             .await
-        {
-            if let Some(records) = response.data {
+            && let Some(records) = response.data {
                 if active_ids {
                     for r in &records {
                         let id_short = if r.id.len() > 8 { &r.id[..8] } else { &r.id };
@@ -47,12 +46,10 @@ pub async fn completions(
                         }
                     }
                     for ws in unique_ws {
-                        println!("{}", ws);
+                        println!("{ws}");
                     }
                 }
             }
-        }
-    }
 
     Ok(())
 }
@@ -242,7 +239,7 @@ _bgrun()
 } &&
 complete -F _bgrun bgrun
 "#;
-    print!("{}", script);
+    print!("{script}");
 }
 
 fn print_zsh_completions() {
@@ -359,5 +356,5 @@ _bgrun() {
 
 _bgrun "$@"
 "#;
-    print!("{}", script);
+    print!("{script}");
 }

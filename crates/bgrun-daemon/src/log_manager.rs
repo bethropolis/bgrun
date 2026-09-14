@@ -82,21 +82,18 @@ pub async fn tail_lines(
         line_number += 1;
 
         let (timestamp, stream, content) = parse_line(&line_buf);
-        if let Some(filter) = stream_filter {
-            if stream.as_deref() != Some(filter) {
+        if let Some(filter) = stream_filter
+            && stream.as_deref() != Some(filter) {
                 continue;
             }
-        }
-        if let Some(lvl) = level_filter {
-            if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+        if let Some(lvl) = level_filter
+            && !content.to_lowercase().contains(&lvl.to_lowercase()) {
                 continue;
             }
-        }
-        if let Some(re) = filter_regex {
-            if !re.is_match(&content) {
+        if let Some(re) = filter_regex
+            && !re.is_match(&content) {
                 continue;
             }
-        }
 
         if matched.len() == n {
             matched.pop_front();
@@ -259,21 +256,18 @@ pub async fn diff_since(
         .enumerate()
         .filter_map(|(i, line)| {
             let (timestamp, stream, content) = parse_line(line);
-            if let Some(filter) = stream_filter {
-                if stream.as_deref() != Some(filter) {
+            if let Some(filter) = stream_filter
+                && stream.as_deref() != Some(filter) {
                     return None;
                 }
-            }
-            if let Some(lvl) = level_filter {
-                if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+            if let Some(lvl) = level_filter
+                && !content.to_lowercase().contains(&lvl.to_lowercase()) {
                     return None;
                 }
-            }
-            if let Some(re) = filter_regex {
-                if !re.is_match(&content) {
+            if let Some(re) = filter_regex
+                && !re.is_match(&content) {
                     return None;
                 }
-            }
             Some(LogLine {
                 line_number: line_offset + i as u64 + 1,
                 content,
@@ -425,14 +419,13 @@ fn ensure_export_target_allowed(out_path: &std::path::Path) -> Result<()> {
     // Reject symlinked ancestors (e.g. a planted directory symlink).
     let mut dir = out_path.parent().unwrap_or(std::path::Path::new("/"));
     while dir != dir.parent().unwrap_or(dir) {
-        if let Ok(meta) = std::fs::symlink_metadata(dir) {
-            if meta.file_type().is_symlink() {
+        if let Ok(meta) = std::fs::symlink_metadata(dir)
+            && meta.file_type().is_symlink() {
                 anyhow::bail!(
                     "export parent {} is a symlink; refusing to write through it",
                     dir.display()
                 );
             }
-        }
         dir = dir.parent().unwrap_or(dir);
     }
     Ok(())
@@ -564,7 +557,7 @@ fn export_matches(
 
 fn parse_ts_ms(ts: &str) -> Result<u64> {
     let dt = chrono::DateTime::parse_from_rfc3339(ts).context("invalid timestamp")?;
-    Ok(dt.timestamp_millis().max(0) as u64)
+    Ok(dt.timestamp_millis().max(0).cast_unsigned())
 }
 
 #[cfg(test)]

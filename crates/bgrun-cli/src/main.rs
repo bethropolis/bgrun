@@ -123,7 +123,7 @@ enum Commands {
         #[arg(long)]
         allocate_port: Option<String>,
 
-        /// Health check URL to poll (e.g. http://localhost:8080/health)
+        /// Health check URL to poll (e.g. <http://localhost:8080/health>)
         #[arg(long)]
         health_check_url: Option<String>,
 

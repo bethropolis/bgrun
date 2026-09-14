@@ -31,7 +31,7 @@ pub async fn screen(id: String, lines: usize, json: bool) -> Result<()> {
                         }
                     }
                 }
-                if data.as_array().map_or(true, |a| a.is_empty()) {
+                if data.as_array().is_none_or(std::vec::Vec::is_empty) {
                     println!("(no output in screen buffer)");
                 }
             }

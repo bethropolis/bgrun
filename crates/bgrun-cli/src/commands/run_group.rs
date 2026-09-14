@@ -19,11 +19,10 @@ pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
     let jobs: Vec<RunArgs> = names
         .iter()
         .map(|name| {
-            if let Some(ref cfg) = config {
-                if let Ok(args) = bgrun_core::config::resolve_job_args(name, cfg) {
+            if let Some(ref cfg) = config
+                && let Ok(args) = bgrun_core::config::resolve_job_args(name, cfg) {
                     return args;
                 }
-            }
             // Fallback: treat name as a raw command
             RunArgs {
                 cmd: vec![name.clone()],
@@ -75,11 +74,10 @@ async fn load_config() -> Option<bgrun_core::BgrunToml> {
     let mut current = start;
     loop {
         let candidate = current.join("bgrun.toml");
-        if let Ok(content) = tokio::fs::read_to_string(&candidate).await {
-            if let Ok(config) = bgrun_core::config::parse_config(&content) {
+        if let Ok(content) = tokio::fs::read_to_string(&candidate).await
+            && let Ok(config) = bgrun_core::config::parse_config(&content) {
                 return Some(config);
             }
-        }
         if current.join(".git").exists() {
             return None;
         }

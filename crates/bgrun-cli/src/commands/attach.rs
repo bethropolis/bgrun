@@ -41,25 +41,24 @@ pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     }
 
     let response: serde_json::Value = serde_json::from_str(response_buf.trim())?;
-    if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+    if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         let err = response
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("attach failed");
-        anyhow::bail!("{}", err);
+        anyhow::bail!("{err}");
     }
 
     // Notify user of interactive instructions before switching terminal modes
     println!(
-        "Attaching to job '{}'. Press Ctrl+P followed by Ctrl+Q to detach.",
-        id
+        "Attaching to job '{id}'. Press Ctrl+P followed by Ctrl+Q to detach."
     );
 
     // Enable raw mode with safety guard (restores terminal even on panic)
     let _guard = RawModeGuard::new()?;
 
-    let result = run_attach_loop(id, read_half, write_half).await;
-    result
+    
+    run_attach_loop(id, read_half, write_half).await
 }
 
 async fn run_attach_loop(
@@ -70,8 +69,8 @@ async fn run_attach_loop(
     let socket_path = bgrun_proto::paths::socket_path();
 
     // Synchronize PTY size on initial attach
-    if let Ok((cols, rows)) = crossterm::terminal::size() {
-        if let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await {
+    if let Ok((cols, rows)) = crossterm::terminal::size()
+        && let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await {
             let _ = client
                 .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
                     id: id.clone(),
@@ -80,7 +79,6 @@ async fn run_attach_loop(
                 })
                 .await;
         }
-    }
 
     // Spawn task to forward socket output → stdout
     let stdout_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
@@ -88,12 +86,11 @@ async fn run_attach_loop(
         let mut buf = [0u8; 8192];
         loop {
             match stream_read.read(&mut buf).await {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     stdout.write_all(&buf[..n]).await?;
                     stdout.flush().await?;
                 }
-                Err(_) => break,
             }
         }
         Ok(())
@@ -106,16 +103,15 @@ async fn run_attach_loop(
     let id_clone = id.clone();
     let socket_path_clone = socket_path.clone();
     let resize_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-        let mut winch = match tokio::signal::unix::signal(
+        let Ok(mut winch) = tokio::signal::unix::signal(
             tokio::signal::unix::SignalKind::window_change(),
-        ) {
-            Ok(s) => s,
-            Err(_) => return,
+        ) else {
+            return;
         };
 
         while winch.recv().await.is_some() {
-            if let Ok((cols, rows)) = crossterm::terminal::size() {
-                if let Ok(mut client) =
+            if let Ok((cols, rows)) = crossterm::terminal::size()
+                && let Ok(mut client) =
                     crate::client::DaemonClient::connect(&socket_path_clone).await
                 {
                     let _ = client
@@ -126,7 +122,6 @@ async fn run_attach_loop(
                         })
                         .await;
                 }
-            }
         }
     });
 
@@ -154,18 +149,17 @@ async fn forward_stdin(writer: &mut tokio::io::WriteHalf<UnixStream>) -> Result<
 
     loop {
         match stdin.read(&mut buf).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => {
                 let mut write_buf = Vec::with_capacity(n);
                 for &b in &buf[..n] {
                     if ctrl_p_pressed {
                         if b == ESCAPE_Q {
                             return Ok(());
-                        } else {
-                            write_buf.push(ESCAPE_P);
-                            write_buf.push(b);
-                            ctrl_p_pressed = false;
                         }
+                        write_buf.push(ESCAPE_P);
+                        write_buf.push(b);
+                        ctrl_p_pressed = false;
                     } else if b == ESCAPE_P {
                         ctrl_p_pressed = true;
                     } else {
@@ -178,7 +172,6 @@ async fn forward_stdin(writer: &mut tokio::io::WriteHalf<UnixStream>) -> Result<
                     writer.flush().await?;
                 }
             }
-            Err(_) => break,
         }
     }
 

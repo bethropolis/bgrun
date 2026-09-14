@@ -57,12 +57,10 @@ pub async fn kill(
         if let Some(val) = response.data {
             println!("{}", serde_json::to_string(&val)?);
         }
+    } else if let Some(id) = id {
+        println!("Killed job {id}");
     } else {
-        if let Some(id) = id {
-            println!("Killed job {id}");
-        } else {
-            println!("Killed");
-        }
+        println!("Killed");
     }
 
     Ok(())

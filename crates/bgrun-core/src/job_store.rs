@@ -56,11 +56,10 @@ impl JobStore {
             return Some(query.to_string());
         }
         // 2. Exact name match
-        if let Some(uuid) = self.name_index.get(query) {
-            if self.jobs.contains_key(uuid) {
+        if let Some(uuid) = self.name_index.get(query)
+            && self.jobs.contains_key(uuid) {
                 return Some(uuid.clone());
             }
-        }
         // 3. Unique prefix match (min 4 chars)
         if query.len() >= 4 {
             let matches: Vec<&String> = self

@@ -100,7 +100,7 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
                     "PORT".bold(), "",
                     "COMMAND".bold(),
                 );
-                let rule: String = std::iter::repeat('\u{2500}').take(90).collect();
+                let rule: String = std::iter::repeat_n('\u{2500}', 90).collect();
                 println!("{}", rule.dim());
             } else {
                 println!(

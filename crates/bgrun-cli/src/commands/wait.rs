@@ -16,7 +16,7 @@ pub async fn wait(id: String, timeout: String, json: bool) -> Result<()> {
     let timeout_ms = timeout.parse::<BgrunDuration>()?.0;
 
     if output_mode(json) == crate::output::OutputMode::Human {
-        eprintln!("Waiting for job {} (timeout: {})...", id, timeout);
+        eprintln!("Waiting for job {id} (timeout: {timeout})...");
     }
 
     let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::channel(1);
@@ -49,7 +49,7 @@ pub async fn wait(id: String, timeout: String, json: bool) -> Result<()> {
                 } else if let Some(ref s) = result.state {
                     let ec = result
                         .exit_code
-                        .map(|c| format!(", exit_code={}", c))
+                        .map(|c| format!(", exit_code={c}"))
                         .unwrap_or_default();
                     println!(
                         "Job {} reached terminal state {}{} ({}ms)",

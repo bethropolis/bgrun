@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 /// Notify trigger for the reactive auto-shutdown monitor.
 /// Called whenever a job spawns or exits.
 pub static LIFECYCLE_NOTIFY: LazyLock<tokio::sync::Notify> =
-    LazyLock::new(|| tokio::sync::Notify::new());
+    LazyLock::new(tokio::sync::Notify::new);
 
 /// Atomically writes `data` to `path` with owner-only permissions.
 ///
@@ -176,7 +176,7 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
     // This cleans up stale duplicates left by earlier restart logic.
     let mut best: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut stale_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for job in jobs.iter() {
+    for job in &jobs {
         if let Some(ref name) = job.name {
             match best.get(name) {
                 Some(prev) => {
@@ -184,8 +184,7 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
                     if job.started_at > jobs
                         .iter()
                         .find(|j| j.id == *prev)
-                        .map(|j| j.started_at)
-                        .unwrap_or(job.started_at)
+                        .map_or(job.started_at, |j| j.started_at)
                     {
                         stale_ids.insert(prev.clone());
                         best.insert(name.clone(), job.id.clone());

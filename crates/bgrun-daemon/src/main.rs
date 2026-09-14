@@ -115,11 +115,11 @@ async fn main() -> Result<()> {
         loop {
             tokio::select! {
                 biased;
-                _ = shutdown_monitor.cancelled() => {
+                () = shutdown_monitor.cancelled() => {
                     tracing::info!("shutdown token set, auto-shutdown monitor exiting");
                     break;
                 }
-                _ = async {
+                () = async {
                     let active_count = {
                         let store_ref = store_clone.lock().await;
                         store_ref
@@ -133,8 +133,8 @@ async fn main() -> Result<()> {
                         LIFECYCLE_NOTIFY.notified().await;
                     } else {
                         tokio::select! {
-                            _ = LIFECYCLE_NOTIFY.notified() => {}
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds)) => {
+                            () = LIFECYCLE_NOTIFY.notified() => {}
+                            () = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds)) => {
                                 let final_count = {
                                     let store_ref = store_clone.lock().await;
                                     store_ref

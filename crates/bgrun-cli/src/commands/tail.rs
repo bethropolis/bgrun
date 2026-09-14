@@ -56,14 +56,14 @@ pub async fn tail(
                         }
                     });
                     if let Some(d) = digest_obj {
-                        let total = d.get("total_lines").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let errors = d.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let warnings = d.get("warnings").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let total = d.get("total_lines").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                        let errors = d.get("errors").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                        let warnings = d.get("warnings").and_then(serde_json::Value::as_u64).unwrap_or(0);
                         println!("Lines: {total}  Errors: {errors}  Warnings: {warnings}");
                         if let Some(err) = d.get("last_error").and_then(|v| v.as_str()) {
                             println!(
                                 "Last error (line {}): {err}",
-                                d.get("last_error_line").and_then(|v| v.as_u64()).unwrap_or(0)
+                                d.get("last_error_line").and_then(serde_json::Value::as_u64).unwrap_or(0)
                             );
                         }
                     } else {
@@ -79,14 +79,13 @@ pub async fn tail(
                         }
                     }
                     // If combined with lines, print them too
-                    if let Some(log_lines) = data["lines"].as_array() {
-                        if !log_lines.is_empty() {
+                    if let Some(log_lines) = data["lines"].as_array()
+                        && !log_lines.is_empty() {
                             println!();
                             for line in log_lines {
                                 print_log_line(line);
                             }
                         }
-                    }
                 } else if let Some(log_lines) = data["lines"].as_array() {
                     for line in log_lines {
                         print_log_line(line);
@@ -108,8 +107,8 @@ pub async fn tail(
     Ok(())
 }
 
-/// Connects to the daemon, sends a StreamLogs command, and prints live
-/// LogLine entries as they arrive (non-polling). `cursor` is `None`: history
+/// Connects to the daemon, sends a `StreamLogs` command, and prints live
+/// `LogLine` entries as they arrive (non-polling). `cursor` is `None`: history
 /// is the caller's job (Tail), only live lines are streamed, optionally filtered.
 async fn stream_logs_follow(
     socket_path: &std::path::Path,
@@ -151,22 +150,16 @@ async fn stream_logs_follow(
     loop {
         line_buf.clear();
         match buf_reader.read_line(&mut line_buf).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(_) => {
                 let trimmed = line_buf.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
                 if json {
-                    println!("{}", trimmed);
-                } else {
-                    match serde_json::from_str::<serde_json::Value>(trimmed) {
-                        Ok(val) => print_log_line(&val),
-                        Err(_) => {}
-                    }
-                }
+                    println!("{trimmed}");
+                } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) { print_log_line(&val) }
             }
-            Err(_) => break,
         }
     }
 

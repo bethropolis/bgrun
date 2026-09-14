@@ -19,7 +19,7 @@ use crate::state;
 
 use bgrun_proto::LogLine;
 
-/// Shared sysinfo::System instance for resource monitoring.
+/// Shared `sysinfo::System` instance for resource monitoring.
 static SYSINFO_SYSTEM: LazyLock<Arc<std::sync::Mutex<sysinfo::System>>> =
     LazyLock::new(|| Arc::new(std::sync::Mutex::new(sysinfo::System::new())));
 
@@ -45,7 +45,7 @@ pub static JOB_BROADCASTS: LazyLock<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<Vec<u8>>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Broadcast senders for structured LogLine streams (used by StreamLogs).
+/// Broadcast senders for structured `LogLine` streams (used by `StreamLogs`).
 pub static LOG_BROADCASTS: LazyLock<
     Mutex<HashMap<String, tokio::sync::broadcast::Sender<bgrun_proto::LogLine>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -82,12 +82,11 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     // Idempotency: if a named job is already alive, return it
     if let Some(ref name) = args.name {
         let store_ref = store.lock().await;
-        if let Some(existing) = store_ref.find_by_name(name) {
-            if existing.is_alive() {
+        if let Some(existing) = store_ref.find_by_name(name)
+            && existing.is_alive() {
                 info!(name = %name, id = %existing.id, "returning existing alive job");
                 return Ok(existing.to_record());
             }
-        }
     }
 
     // Dependency: wait for named job to reach Ready (with timeout)
@@ -97,7 +96,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         let start = tokio::time::Instant::now();
         loop {
             if start.elapsed() >= dep_timeout {
-                anyhow::bail!("dependency '{}' did not become ready within 120s", dep_name);
+                anyhow::bail!("dependency '{dep_name}' did not become ready within 120s");
             }
             let store_ref = store.lock().await;
             match store_ref.find_by_name(dep_name) {
@@ -114,7 +113,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
                     sleep(Duration::from_millis(100)).await;
                 }
                 None => {
-                    anyhow::bail!("dependency '{}' not found", dep_name);
+                    anyhow::bail!("dependency '{dep_name}' not found");
                 }
             }
         }
@@ -188,14 +187,13 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
             cpu_quota_pct: args.cpu_quota,
             pids_max: args.pids_max,
         };
-        if !limits.is_empty() {
-            if let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
+        if !limits.is_empty()
+            && let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
                 let _ = child.kill().await;
                 STDIN_HANDLES.lock().await.remove(&id);
                 let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
                 anyhow::bail!("{e:#}");
             }
-        }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -256,9 +254,9 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     let record = job.to_record();
     {
         let mut store = store.lock().await;
-        if let Some(ref name) = job_name {
-            if let Some(existing) = store.find_by_name(name) {
-                if existing.is_alive() && existing.id != id {
+        if let Some(ref name) = job_name
+            && let Some(existing) = store.find_by_name(name)
+                && existing.is_alive() && existing.id != id {
                     // Clone the existing record (and its id for logging) before
                     // dropping the store lock, then terminate the process we
                     // just spawned so it does not leak as an orphan (the old
@@ -277,8 +275,6 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
                     SCREEN_BUFFERS.lock().await.remove(&id);
                     return Ok(dup);
                 }
-            }
-        }
         store.insert(job);
     }
 
@@ -308,7 +304,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
             // Check if job is still alive before killing
             let alive = {
                 let store_ref = store_clone.lock().await;
-                store_ref.get(&id_clone).is_some_and(|j| j.is_alive())
+                store_ref.get(&id_clone).is_some_and(bgrun_core::Job::is_alive)
             };
             if alive {
                 info!(id = %id_clone, "max runtime reached, killing job");
@@ -389,13 +385,12 @@ async fn handle_job_exit(
             let pattern_matched = poll_log_for_pattern(&log_path, &pattern, 3000).await;
             if pattern_matched {
                 let mut store = store.lock().await;
-                if let Some(job) = store.get_mut(&id) {
-                    if job.state == JobState::Running {
+                if let Some(job) = store.get_mut(&id)
+                    && job.state == JobState::Running {
                         let _ = job.transition(JobState::Ready);
                         job.ready_at = Some(chrono::Utc::now());
                         info!(id = %id, "post-exit readiness check: pattern matched, transitioning through Ready");
                     }
-                }
             }
         }
     }
@@ -536,11 +531,10 @@ async fn schedule_restart(id: String, store: Arc<Mutex<JobStore>>) {
         let exponent = 1u64 << consecutive.min(8); // cap exponent at 256x
         let delay_ms = backoff_ms.saturating_mul(exponent).min(300_000); // cap at 5 min
         // Simple jitter: 0–1000ms based on nanosecond timestamp bits
-        let jitter_ms = (std::time::SystemTime::now()
+        let jitter_ms = u64::from(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .subsec_nanos()
-            % 1000) as u64;
+            .subsec_nanos() % 1000);
         let total_ms = delay_ms + jitter_ms;
 
         // Increment consecutive_failures
@@ -577,7 +571,7 @@ pub async fn handle_adopted_job_crash(id: String, store: Arc<Mutex<JobStore>>) {
 }
 
 /// Re-spawns a job that previously crashed, using the stored Job data
-/// to reconstruct RunArgs. Removes the old crashed record first so
+/// to reconstruct `RunArgs`. Removes the old crashed record first so
 /// named jobs never accumulate stale entries.
 ///
 /// Returns a boxed future rather than an `async fn` future: `restart_job`
@@ -609,12 +603,11 @@ fn restart_job(
     // restart scheduled for an older UUID.
     if let Some(ref name) = job.name {
         let store_ref = store.lock().await;
-        if let Some(existing) = store_ref.find_by_name(name) {
-            if existing.is_alive() {
+        if let Some(existing) = store_ref.find_by_name(name)
+            && existing.is_alive() {
                 info!(name = %name, "restart skipped: job already alive");
                 return;
             }
-        }
     }
 
     let args = run_args_from_job(&job);
@@ -676,13 +669,11 @@ async fn swap_record(
     // same name, and to refuse when someone else owns the name.
     {
         let mut store = store.lock().await;
-        if let Some(ref name) = args.name {
-            if let Some(existing) = store.find_by_name(name) {
-                if existing.is_alive() && existing.id != old_id {
+        if let Some(ref name) = args.name
+            && let Some(existing) = store.find_by_name(name)
+                && existing.is_alive() && existing.id != old_id {
                     anyhow::bail!("restart race: job {name} already alive with different UUID");
                 }
-            }
-        }
         store.remove(old_id);
     }
     let _ = tokio::fs::remove_dir_all(state::job_dir(old_id)).await;
@@ -697,18 +688,17 @@ async fn swap_record(
         // lifetime restarts. Only touch a fresh (count == 0) record so a
         // raced duplicate keeps its own count.
         let mut store_ref = store.lock().await;
-        if let Some(j) = store_ref.get_mut(&record.id) {
-            if j.restart_count == 0 {
+        if let Some(j) = store_ref.get_mut(&record.id)
+            && j.restart_count == 0 {
                 j.restart_count = prior_restarts + 1;
                 j.consecutive_failures = prior_failures;
                 let _ = state::write_status(j).await;
             }
-        }
     }
     Ok(record)
 }
 
-/// Monitors a piped child process and calls handle_job_exit on exit.
+/// Monitors a piped child process and calls `handle_job_exit` on exit.
 async fn monitor_job(id: String, store: Arc<Mutex<JobStore>>, mut child: Child) {
     let exit_status = child.wait().await;
     let exit_code = match &exit_status {
@@ -748,12 +738,9 @@ async fn poll_log_for_pattern(log_path: &std::path::Path, pattern: &str, timeout
             return false;
         }
 
-        let mut file = match tokio::fs::OpenOptions::new().read(true).open(log_path).await {
-            Ok(f) => f,
-            Err(_) => {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                continue;
-            }
+        let Ok(mut file) = tokio::fs::OpenOptions::new().read(true).open(log_path).await else {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
         };
 
         let mut content = String::new();
@@ -841,13 +828,12 @@ async fn spawn_pty_job(
             cpu_quota_pct: args.cpu_quota,
             pids_max: args.pids_max,
         };
-        if !limits.is_empty() {
-            if let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
+        if !limits.is_empty()
+            && let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
                 let _ = child.kill();
                 let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
                 anyhow::bail!("{e:#}");
             }
-        }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -925,9 +911,9 @@ async fn spawn_pty_job(
     let record = job.to_record();
     {
         let mut store = store.lock().await;
-        if let Some(ref name) = job_name {
-            if let Some(existing) = store.find_by_name(name) {
-                if existing.is_alive() && existing.id != id {
+        if let Some(ref name) = job_name
+            && let Some(existing) = store.find_by_name(name)
+                && existing.is_alive() && existing.id != id {
                     // Clone the existing record (and its id for logging) before
                     // dropping the store lock, then terminate the orphaned PTY
                     // process and remove its handles so nothing leaks.
@@ -943,8 +929,6 @@ async fn spawn_pty_job(
                     SCREEN_BUFFERS.lock().await.remove(&id);
                     return Ok(dup);
                 }
-            }
-        }
         store.insert(job);
     }
 
@@ -973,7 +957,7 @@ async fn spawn_pty_job(
             sleep(Duration::from_millis(max_ms)).await;
             let alive = {
                 let store_ref = store_clone.lock().await;
-                store_ref.get(&id_clone).is_some_and(|j| j.is_alive())
+                store_ref.get(&id_clone).is_some_and(bgrun_core::Job::is_alive)
             };
             if alive {
                 info!(id = %id_clone, "max runtime reached, killing job");
@@ -1045,7 +1029,7 @@ pub async fn kill_job(id_or_name: &str, store: Arc<Mutex<JobStore>>) -> Result<(
         sleep(Duration::from_secs(5)).await;
         let should_kill = {
             let store = store_clone.lock().await;
-            store.get(&id_clone).is_some_and(|job| job.is_alive())
+            store.get(&id_clone).is_some_and(bgrun_core::Job::is_alive)
         };
         if !should_kill {
             return;
@@ -1123,11 +1107,10 @@ pub async fn stop_job(
         (job.pid, job.is_alive(), actual_id)
     };
 
-    if is_alive {
-        if let Some(pid) = pid {
+    if is_alive
+        && let Some(pid) = pid {
             terminate_process_group(pid, Duration::from_millis(timeout_ms.max(100))).await;
         }
-    }
 
     let job = {
         let mut store = store.lock().await;
@@ -1220,7 +1203,7 @@ pub async fn kill_all_jobs(store: Arc<Mutex<JobStore>>) {
     for (id, pid) in &alive {
         let still_alive = {
             let store_ref = store.lock().await;
-            store_ref.get(id).is_some_and(|j| j.is_alive())
+            store_ref.get(id).is_some_and(bgrun_core::Job::is_alive)
         };
         if still_alive {
             let pgid = Pid::from_raw(*pid as i32);
@@ -1251,7 +1234,7 @@ pub async fn send_stdin(
             use std::io::Write;
             writer
                 .write_all(data.as_bytes())
-                .map_err(|e| anyhow::anyhow!("stdin write to PTY failed: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("stdin write to PTY failed: {e}"))?;
             return Ok(());
         }
     }
@@ -1262,8 +1245,7 @@ pub async fn send_stdin(
         .get_mut(&actual_id)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no stdin handle for job '{}' (process may have exited or was started with --pty)",
-                id_or_name
+                "no stdin handle for job '{id_or_name}' (process may have exited or was started with --pty)"
             )
         })?;
 
@@ -1291,7 +1273,7 @@ async fn resolve_job_id(
     let store_ref = store.lock().await;
     let id = store_ref
         .resolve_id(id_or_name)
-        .ok_or_else(|| anyhow::anyhow!("job '{}' not found", id_or_name))?;
+        .ok_or_else(|| anyhow::anyhow!("job '{id_or_name}' not found"))?;
     drop(store_ref);
 
     // Verify the resolved ID has a handle
@@ -1304,8 +1286,7 @@ async fn resolve_job_id(
     }
 
     anyhow::bail!(
-        "stdin handle for job '{}' is no longer available (process may have exited)",
-        id_or_name
+        "stdin handle for job '{id_or_name}' is no longer available (process may have exited)"
     )
 }
 
@@ -1346,10 +1327,10 @@ fn get_process_rss_kb(pid: u32) -> Option<u64> {
     let mut sys = SYSINFO_SYSTEM.lock().expect("sysinfo lock poisoned");
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     sys.process(sysinfo::Pid::from_u32(pid))
-        .map(|p| p.memory())
+        .map(sysinfo::Process::memory)
 }
 
-/// Monitors a job's RSS every second and kills it if it exceeds max_rss_mb.
+/// Monitors a job's RSS every second and kills it if it exceeds `max_rss_mb`.
 async fn monitor_memory_limit(
     id: String,
     max_rss_mb: u64,
@@ -1482,13 +1463,12 @@ async fn capture_output(
                     partial.extend_from_slice(&buf[start..n]);
                 }
                 // Check for rotation (only once per chunk)
-                if let Ok(meta) = tokio::fs::metadata(&log_path).await {
-                    if meta.len() > rotation.max_bytes
+                if let Ok(meta) = tokio::fs::metadata(&log_path).await
+                    && meta.len() > rotation.max_bytes
                         && let Ok(rotated) =
                             crate::log_manager::rotate_if_needed(id, &rotation).await
                         && rotated
-                    {
-                        if let Ok(new_file) = tokio::fs::OpenOptions::new()
+                        && let Ok(new_file) = tokio::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
                             .open(&log_path)
@@ -1496,8 +1476,6 @@ async fn capture_output(
                         {
                             file = new_file;
                         }
-                    }
-                }
             }
             Err(_) => break,
         }
@@ -1594,7 +1572,7 @@ async fn write_ts_line(
     }
 }
 
-/// Synchronous version of write_ts_line for PTY capture (called from spawn_blocking).
+/// Synchronous version of `write_ts_line` for PTY capture (called from `spawn_blocking`).
 fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     use std::io::Write;
 
@@ -1646,8 +1624,9 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     }
 }
 
-/// Captures output from a PTY master reader (sync, called from spawn_blocking).
-/// Like capture_output but uses std::io::Read/Write for synchronous PTY reads.
+/// Captures output from a PTY master reader (sync, called from `spawn_blocking`).
+/// Like `capture_output` but uses `std::io::Read/Write` for synchronous PTY reads.
+#[allow(clippy::needless_pass_by_value)]
 fn capture_pty_output(
     mut reader: Box<dyn std::io::Read + Send>,
     log_path: &std::path::Path,
@@ -1704,20 +1683,18 @@ fn capture_pty_output(
                     partial.extend_from_slice(&buf[start..n]);
                 }
                 // Check for rotation (only once per chunk)
-                if let Ok(meta) = std::fs::metadata(log_path) {
-                    if meta.len() > rotation.max_bytes {
+                if let Ok(meta) = std::fs::metadata(log_path)
+                    && meta.len() > rotation.max_bytes {
                         let dir = log_path.parent();
                         let rotated = dir.is_some_and(|d| {
                             crate::log_manager::rotate_files_blocking(d, &rotation)
                                 .unwrap_or(false)
                         });
-                        if rotated {
-                            if let Ok(new_file) = reopen(log_path) {
+                        if rotated
+                            && let Ok(new_file) = reopen(log_path) {
                                 file = new_file;
                             }
-                        }
                     }
-                }
             }
             Err(e) => {
                 error!(id = %id, "error reading PTY output: {}", e);

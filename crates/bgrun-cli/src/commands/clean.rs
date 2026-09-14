@@ -41,7 +41,7 @@ pub async fn clean(workspace: Option<String>, json: bool, force: bool) -> Result
         let removed = data["removed"].as_u64().unwrap_or(0);
         match output_mode(json) {
             OutputMode::Human => println!("Removed {removed} terminated job(s)."),
-            OutputMode::Json => println!(r#"{{"removed":{}}}"#, removed),
+            OutputMode::Json => println!(r#"{{"removed":{removed}}}"#),
         }
     }
 

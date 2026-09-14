@@ -10,7 +10,7 @@ use crate::state::LIFECYCLE_NOTIFY;
 use crate::state;
 
 /// Callback invoked by the orphan monitor when a re-adopted job has crashed,
-/// so the daemon can honor its OnCrash restart policy (previously ignored for
+/// so the daemon can honor its `OnCrash` restart policy (previously ignored for
 /// adopted jobs). The daemon binary implements this because it owns the
 /// process-spawn/restart logic; the library crate only reports the event.
 pub type AdoptedCrashHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
@@ -36,10 +36,7 @@ pub async fn readopt_all(
             continue;
         }
 
-        let pid = match job.pid {
-            Some(p) => p,
-            None => continue,
-        };
+        let Some(pid) = job.pid else { continue };
 
         let alive = is_process_alive(pid) && pid_matches_cmdline(pid, &job.cmd);
 
@@ -83,7 +80,7 @@ pub async fn readopt_all(
 }
 
 /// Polls a re-adopted job every 2 seconds, transitioning to Crashed if it dies
-/// and reporting the crash so its OnCrash restart policy is honored.
+/// and reporting the crash so its `OnCrash` restart policy is honored.
 async fn poll_adopted_job(
     id: String,
     pid: u32,

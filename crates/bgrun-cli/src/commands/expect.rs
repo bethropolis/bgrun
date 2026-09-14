@@ -16,7 +16,7 @@ pub async fn expect(id: String, pattern: String, is_regex: bool, timeout: String
     let mut client = DaemonClient::connect(&socket_path).await?;
 
     if output_mode(json) == crate::output::OutputMode::Human {
-        eprintln!("Waiting for pattern in job {} (timeout: {})...", id, timeout);
+        eprintln!("Waiting for pattern in job {id} (timeout: {timeout})...");
     }
 
     let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::channel(1);

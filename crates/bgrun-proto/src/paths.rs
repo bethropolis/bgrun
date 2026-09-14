@@ -10,11 +10,11 @@ pub fn state_dir() -> PathBuf {
         // always safe to call from any context.
         #[allow(unsafe_code)]
         let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/tmp/bgrun-{}", uid))
+        PathBuf::from(format!("/tmp/bgrun-{uid}"))
     }
 }
 
-/// Returns the socket path from XDG_RUNTIME_DIR or fallback.
+/// Returns the socket path from `XDG_RUNTIME_DIR` or fallback.
 pub fn socket_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         PathBuf::from(runtime_dir).join("bgrun").join("daemon.sock")
@@ -23,7 +23,7 @@ pub fn socket_path() -> PathBuf {
         // requires no special state or valid pointer arguments.
         #[allow(unsafe_code)]
         let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/tmp/bgrun-{}", uid)).join("daemon.sock")
+        PathBuf::from(format!("/tmp/bgrun-{uid}")).join("daemon.sock")
     }
 }
 

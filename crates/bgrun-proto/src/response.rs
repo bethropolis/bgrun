@@ -6,7 +6,7 @@ use crate::types::{JobState, ReadinessStrategy, RestartPolicy};
 
 /// A record of a job returned to the client.
 ///
-/// Includes full RunArgs fields for meta.json persistence across daemon restarts.
+/// Includes full `RunArgs` fields for meta.json persistence across daemon restarts.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct JobRecord {
     pub id: String,
@@ -52,7 +52,8 @@ pub struct JobRecord {
     pub health_threshold: Option<u32>,
 }
 
-/// Helper for serde skip_serializing_if on bool fields.
+/// Helper for serde `skip_serializing_if` on bool fields (serde requires `&bool`).
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
 }

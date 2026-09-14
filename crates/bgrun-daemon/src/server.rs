@@ -40,7 +40,7 @@ pub async fn run_server(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.cancelled() => {
+            () = shutdown.cancelled() => {
                 info!("shutdown signal received, stopping server");
                 break;
             }
@@ -111,9 +111,8 @@ async fn handle_connection(
     // Peek at the first request without consuming the stream.
     // Attach hijacks the stream, so we cannot split it upfront.
     let first_line = read_first_line(&stream).await;
-    let first_line = match first_line {
-        Some(l) => l,
-        None => return Ok(()),
+    let Some(first_line) = first_line else {
+        return Ok(());
     };
 
     let request: Request = match serde_json::from_str(&first_line) {
@@ -179,7 +178,7 @@ async fn handle_connection(
     Ok(())
 }
 
-/// Reads the first line from a UnixStream without consuming the stream.
+/// Reads the first line from a `UnixStream` without consuming the stream.
 /// Reads byte-by-byte up to a newline, with a 64KB limit.
 async fn read_first_line(stream: &UnixStream) -> Option<String> {
     stream.readable().await.ok()?;
@@ -197,10 +196,9 @@ async fn read_first_line(stream: &UnixStream) -> Option<String> {
                     return None;
                 }
             }
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 stream.readable().await.ok()?;
-                continue;
             }
             Err(_) => return None,
         }
@@ -256,21 +254,17 @@ async fn handle_attach(
         let mut writers = runner::PTY_WRITERS.lock().await;
         writers.get_mut(&job_id).map(|w| w.clone())
     };
-
-    let pty_writer = match pty_writer {
-        Some(w) => w,
-        None => return Ok(()),
+    let Some(pty_writer) = pty_writer else {
+        return Ok(());
     };
 
     // Subscribe to the broadcast channel for PTY output (use resolved job_id)
     let rx = {
         let broadcasts = runner::JOB_BROADCASTS.lock().await;
-        broadcasts.get(&job_id).map(|tx| tx.subscribe())
+        broadcasts.get(&job_id).map(tokio::sync::broadcast::Sender::subscribe)
     };
-
-    let mut rx = match rx {
-        Some(r) => r,
-        None => return Ok(()),
+    let Some(mut rx) = rx else {
+        return Ok(());
     };
 
     // Shared signal to notify stdin forwarding when the job exits
@@ -291,7 +285,7 @@ async fn handle_attach(
                     let _ = writer.flush().await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             }
         }
     });
@@ -304,7 +298,7 @@ async fn handle_attach(
             tokio::select! {
                 result = stream_read.read(&mut buf) => {
                     match result {
-                        Ok(0) => break,
+                        Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let data = buf[..n].to_vec();
                             let mut writer = pty_writer.lock().expect("PTY writer lock poisoned");
@@ -314,10 +308,9 @@ async fn handle_attach(
                             }
                             let _ = writer.flush();
                         }
-                        Err(_) => break,
                     }
                 }
-                _ = exit_notify_clone.notified() => break,
+                () = exit_notify_clone.notified() => break,
             }
         }
     });
@@ -339,7 +332,7 @@ async fn handle_attach(
     Ok(())
 }
 
-/// Handles a StreamLogs command: hijacks the connection and streams LogLine
+/// Handles a `StreamLogs` command: hijacks the connection and streams `LogLine`
 /// entries as NDJSON. If `cursor` is set, first replays lines written after
 /// that byte offset (with the requested filters applied and true line
 /// numbers); otherwise only live lines are streamed. The client is expected
@@ -374,16 +367,14 @@ async fn handle_stream_logs(
 
     let filter = regex::Regex::new(filter_regex.as_deref().unwrap_or("$^")).ok();
     let matches_filters = move |content: &str| -> bool {
-        if let Some(lvl) = level.as_deref() {
-            if !content.to_lowercase().contains(&lvl.to_lowercase()) {
+        if let Some(lvl) = level.as_deref()
+            && !content.to_lowercase().contains(&lvl.to_lowercase()) {
                 return false;
             }
-        }
-        if let Some(re) = &filter {
-            if !re.is_match(content) {
+        if let Some(re) = &filter
+            && !re.is_match(content) {
                 return false;
             }
-        }
         true
     };
 
@@ -439,12 +430,11 @@ async fn handle_stream_logs(
     // Subscribe to the broadcast channel for live LogLine stream
     let rx = {
         let broadcasts = runner::LOG_BROADCASTS.lock().await;
-        broadcasts.get(&job_id).map(|tx| tx.subscribe())
+        broadcasts.get(&job_id).map(tokio::sync::broadcast::Sender::subscribe)
     };
 
-    let mut rx = match rx {
-        Some(r) => r,
-        None => return Ok(()),
+    let Some(mut rx) = rx else {
+        return Ok(());
     };
 
     // Spawn task to forward broadcast LogLines → socket (filtered).
@@ -464,7 +454,7 @@ async fn handle_stream_logs(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             }
         }
     });
@@ -479,7 +469,7 @@ async fn handle_stream_logs(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             let done = {
                 let store_ref = store_clone.lock().await;
-                store_ref.get(&job_id_clone).map_or(true, |j| !j.is_alive())
+                store_ref.get(&job_id_clone).is_none_or(|j| !j.is_alive())
             };
             if done {
                 exit_notify_clone.notify_one();
@@ -490,7 +480,7 @@ async fn handle_stream_logs(
 
     tokio::select! {
         _ = &mut output_task => {}
-        _ = exit_notify.notified() => {
+        () = exit_notify.notified() => {
             output_task.abort();
             let _ = output_task.await;
         }
@@ -512,16 +502,16 @@ async fn dispatch(
         Command::Run(args) => match runner::spawn_job(args, store).await {
             Ok(record) => match serde_json::to_value(record) {
                 Ok(val) => Response::ok(req_id.clone(), val),
-                Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
             },
             Err(e) => Response::err(req_id.clone(), e.to_string()),
         },
         Command::Status { id } => {
             let store = store.lock().await;
             let job_id = store.resolve_id(&id);
-            let job_id = match job_id {
-                Some(jid) => jid,
-                None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+            let Some(job_id) = job_id else {
+                return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found"))
+                    .unwrap_or_default();
             };
             match store.get(&job_id) {
                 Some(job) => {
@@ -536,7 +526,7 @@ async fn dispatch(
                     match serde_json::to_value(status) {
                         Ok(val) => Response::ok(req_id.clone(), val),
                         Err(e) => {
-                            Response::err(req_id.clone(), format!("serialization error: {}", e))
+                            Response::err(req_id.clone(), format!("serialization error: {e}"))
                         }
                     }
                 }
@@ -549,7 +539,7 @@ async fn dispatch(
             let records: Vec<bgrun_proto::JobRecord> = jobs.iter().map(|j| j.to_record()).collect();
             match serde_json::to_value(records) {
                 Ok(val) => Response::ok(req_id.clone(), val),
-                Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
             }
         }
         Command::Kill(KillArgs { id, workspace }) => match id {
@@ -657,7 +647,7 @@ async fn dispatch(
             };
             match serde_json::to_value(result) {
                 Ok(val) => Response::ok(req_id.clone(), val),
-                Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
             }
         }
         Command::Tail(TailArgs {
@@ -703,18 +693,18 @@ async fn dispatch(
                                     });
                                     match serde_json::to_value(combined) {
                                         Ok(val) => Response::ok(req_id.clone(), val),
-                                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
                                     }
                                 }
                                 Err(_) => match serde_json::to_value(digest) {
                                     Ok(val) => Response::ok(req_id.clone(), val),
-                                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
                                 },
                             }
                         } else {
                             match serde_json::to_value(digest) {
                                 Ok(val) => Response::ok(req_id.clone(), val),
-                                Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
                             }
                         }
                     }
@@ -738,7 +728,7 @@ async fn dispatch(
                         match serde_json::to_value(lines_json) {
                             Ok(val) => Response::ok(req_id.clone(), val),
                             Err(e) => {
-                                Response::err(req_id.clone(), format!("serialization error: {}", e))
+                                Response::err(req_id.clone(), format!("serialization error: {e}"))
                             }
                         }
                     }
@@ -766,7 +756,7 @@ async fn dispatch(
                         match serde_json::to_value(result) {
                             Ok(val) => Response::ok(req_id.clone(), val),
                             Err(e) => {
-                                Response::err(req_id.clone(), format!("serialization error: {}", e))
+                                Response::err(req_id.clone(), format!("serialization error: {e}"))
                             }
                         }
                     }
@@ -799,11 +789,10 @@ async fn dispatch(
                     // limit only truncates the displayed list here — it must not
                     // influence the cursor advance (mixing a byte offset with a
                     // line count permanently corrupts the cursor).
-                    if let Some(max_lines) = lines {
-                        if log_lines.len() > max_lines {
+                    if let Some(max_lines) = lines
+                        && log_lines.len() > max_lines {
                             log_lines = log_lines.split_off(log_lines.len() - max_lines);
                         }
-                    }
 
                     // Update cursor in store and persist
                     {
@@ -832,7 +821,7 @@ async fn dispatch(
                     });
                     match serde_json::to_value(result) {
                         Ok(val) => Response::ok(req_id.clone(), val),
-                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
                     }
                 }
                 Err(e) => Response::err(req_id.clone(), e.to_string()),
@@ -846,7 +835,7 @@ async fn dispatch(
             match runner::get_stats(&id, store.clone()).await {
                 Ok(stats) => match serde_json::to_value(stats) {
                     Ok(val) => Response::ok(req_id.clone(), val),
-                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
                 },
                 Err(e) => Response::err(req_id.clone(), e.to_string()),
             }
@@ -864,22 +853,19 @@ async fn dispatch(
             let job_id = {
                 let store_ref = store.lock().await;
                 let jid = store_ref.resolve_id(&id);
-                match jid {
-                    Some(jid) => match store_ref.get(&jid) {
-                        Some(job) if job.is_alive() => jid,
-                        Some(_) => {
-                            let err = Response::<()>::err(req_id.clone(), "job is not alive");
-                            return serde_json::to_value(err).unwrap_or_default();
-                        }
-                        None => {
-                            let err = Response::<()>::err(req_id.clone(), "job not found");
-                            return serde_json::to_value(err).unwrap_or_default();
-                        }
-                    },
+                if let Some(jid) = jid { match store_ref.get(&jid) {
+                    Some(job) if job.is_alive() => jid,
+                    Some(_) => {
+                        let err = Response::<()>::err(req_id.clone(), "job is not alive");
+                        return serde_json::to_value(err).unwrap_or_default();
+                    }
                     None => {
                         let err = Response::<()>::err(req_id.clone(), "job not found");
                         return serde_json::to_value(err).unwrap_or_default();
                     }
+                } } else {
+                    let err = Response::<()>::err(req_id.clone(), "job not found");
+                    return serde_json::to_value(err).unwrap_or_default();
                 }
             };
 
@@ -957,13 +943,13 @@ async fn dispatch(
                 let label = args.name.clone().unwrap_or_else(|| "unnamed".into());
                 match runner::spawn_job(args, store.clone()).await {
                     Ok(record) => records.push(record),
-                    Err(e) => errors.push(format!("{}: {}", label, e)),
+                    Err(e) => errors.push(format!("{label}: {e}")),
                 }
             }
             if errors.is_empty() {
                 match serde_json::to_value(records) {
                     Ok(val) => Response::ok(req_id.clone(), val),
-                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {}", e)),
+                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
                 }
             } else {
                 Response::err(req_id.clone(), errors.join("; "))
@@ -988,7 +974,7 @@ async fn dispatch(
                         pixel_width: 0,
                         pixel_height: 0,
                     }) {
-                        Response::err(req_id.clone(), format!("resize failed: {}", e))
+                        Response::err(req_id.clone(), format!("resize failed: {e}"))
                     } else {
                         Response::ok(req_id.clone(), serde_json::json!({"resized": true}))
                     }
@@ -1042,7 +1028,7 @@ async fn dispatch(
                 let count = lines.min(all_lines.len());
                 let tail: Vec<String> = all_lines[all_lines.len().saturating_sub(count)..]
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect();
                 tail
             });
@@ -1123,7 +1109,7 @@ async fn dispatch(
         Ok(val) => val,
         Err(e) => serde_json::to_value(Response::<()>::err(
             req_id,
-            format!("serialization error: {}", e),
+            format!("serialization error: {e}"),
         ))
         .unwrap_or_default(),
     }
@@ -1134,9 +1120,8 @@ async fn dispatch(
 /// replayed after `offset` can carry true file line numbers.
 async fn count_newlines_before(path: &std::path::Path, offset: u64) -> u64 {
     use tokio::io::AsyncReadExt;
-    let mut file = match tokio::fs::File::open(path).await {
-        Ok(f) => f,
-        Err(_) => return 0,
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return 0;
     };
     let mut remaining = offset as usize;
     let mut count: u64 = 0;
@@ -1157,8 +1142,7 @@ async fn count_newlines_before(path: &std::path::Path, offset: u64) -> u64 {
 async fn get_file_size(path: &std::path::Path) -> u64 {
     tokio::fs::metadata(path)
         .await
-        .map(|m| m.len())
-        .unwrap_or(0)
+        .map_or(0, |m| m.len())
 }
 
 /// Reads bytes from `start` to `end` in a file.
@@ -1183,45 +1167,45 @@ fn args_summary(cmd: &Command) -> String {
         Command::Run(args) => {
             let cmd_str = args.cmd.join(" ");
             if let Some(ref name) = args.name {
-                format!("name={} cmd=\"{}\"", name, cmd_str)
+                format!("name={name} cmd=\"{cmd_str}\"")
             } else {
-                format!("cmd=\"{}\"", cmd_str)
+                format!("cmd=\"{cmd_str}\"")
             }
         }
         Command::Kill(KillArgs { id, workspace }) => match (id, workspace) {
-            (Some(id), _) => format!("id={}", id),
-            (_, Some(ws)) => format!("workspace={}", ws),
-            _ => "".into(),
+            (Some(id), _) => format!("id={id}"),
+            (_, Some(ws)) => format!("workspace={ws}"),
+            _ => String::new(),
         },
-        Command::Stop { id, .. } => format!("id={}", id),
-        Command::Restart { id, .. } => format!("id={}", id),
+        Command::Stop { id, .. }
+        | Command::Restart { id, .. }
+        | Command::Status { id }
+        | Command::Wait { id, .. }
+        | Command::Send { id, .. }
+        | Command::Stats { id }
+        | Command::Attach { id }
+        | Command::StreamLogs { id, .. }
+        | Command::Screen { id, .. } => format!("id={id}"),
         Command::Tail(TailArgs { id, lines, filter_regex, .. }) => {
-            let mut s = format!("id={} lines={}", id, lines);
+            let mut s = format!("id={id} lines={lines}");
             if filter_regex.is_some() {
                 s.push_str(" filter=regex");
             }
             s
         }
-        Command::Status { id } => format!("id={}", id),
         Command::List { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
-        Command::Wait { id, .. } => format!("id={}", id),
         Command::Diff { id, filter_regex, .. } => {
-            let mut s = format!("id={}", id);
+            let mut s = format!("id={id}");
             if filter_regex.is_some() {
                 s.push_str(" filter=regex");
             }
             s
         }
-        Command::Send { id, .. } => format!("id={}", id),
-        Command::Stats { id } => format!("id={}", id),
-        Command::Expect { id, pattern, .. } => format!("id={} pattern=\"{}\"", id, pattern),
-        Command::Attach { id } => format!("id={}", id),
-        Command::ResizePty { id, cols, rows } => format!("id={} {}x{}", id, cols, rows),
+        Command::Expect { id, pattern, .. } => format!("id={id} pattern=\"{pattern}\""),
+        Command::ResizePty { id, cols, rows } => format!("id={id} {cols}x{rows}"),
         Command::Clean { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
         Command::RunGroup { jobs } => format!("{} jobs", jobs.len()),
-        Command::StreamLogs { id, .. } => format!("id={id}"),
-        Command::Screen { id, lines } => format!("id={} lines={}", id, lines),
-        Command::Export { id, path, .. } => format!("id={} path={}", id, path),
+        Command::Export { id, path, .. } => format!("id={id} path={path}"),
     }
 }
 
@@ -1232,23 +1216,19 @@ async fn count_lines_up_to(path: &std::path::Path, offset: u64) -> u64 {
     if offset == 0 {
         return 0;
     }
-    let mut file = match tokio::fs::OpenOptions::new()
+    let Ok(mut file) = tokio::fs::OpenOptions::new()
         .read(true)
         .open(path)
         .await
-    {
-        Ok(f) => f,
-        Err(_) => return 0,
+    else {
+        return 0;
     };
     if file.seek(std::io::SeekFrom::Start(0)).await.is_err() {
         return 0;
     }
     let to_read = offset.min(10 * 1024 * 1024) as usize; // cap at 10MB
     let mut buf = vec![0u8; to_read];
-    let n = match file.read(&mut buf).await {
-        Ok(n) => n,
-        Err(_) => return 0,
-    };
+    let Ok(n) = file.read(&mut buf).await else { return 0 };
     buf[..n].iter().filter(|&&b| b == b'\n').count() as u64
 }
 

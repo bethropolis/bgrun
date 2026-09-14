@@ -94,18 +94,12 @@ impl Job {
     pub fn transition(&mut self, next: JobState) -> Result<(), Error> {
         let valid = matches!(
             (&self.state, &next),
-            (JobState::Starting, JobState::Running)
-                | (JobState::Starting, JobState::Ready)
-                | (JobState::Starting, JobState::Exited)
-                | (JobState::Starting, JobState::Crashed)
-                | (JobState::Starting, JobState::Killed)
-                | (JobState::Running, JobState::Ready)
-                | (JobState::Running, JobState::Exited)
-                | (JobState::Running, JobState::Crashed)
-                | (JobState::Running, JobState::Killed)
-                | (JobState::Ready, JobState::Exited)
-                | (JobState::Ready, JobState::Crashed)
-                | (JobState::Ready, JobState::Killed)
+            (JobState::Starting,
+JobState::Running | JobState::Ready | JobState::Exited | JobState::Crashed |
+JobState::Killed) |
+(JobState::Running,
+JobState::Ready | JobState::Exited | JobState::Crashed | JobState::Killed) |
+(JobState::Ready, JobState::Exited | JobState::Crashed | JobState::Killed)
         );
 
         if !valid {

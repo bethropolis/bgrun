@@ -42,13 +42,12 @@ impl LogPatternChecker {
 #[async_trait]
 impl ReadinessChecker for LogPatternChecker {
     async fn check(&self) -> bool {
-        let mut file = match tokio::fs::OpenOptions::new()
+        let Ok(mut file) = tokio::fs::OpenOptions::new()
             .read(true)
             .open(&self.path)
             .await
-        {
-            Ok(f) => f,
-            Err(_) => return false,
+        else {
+            return false;
         };
 
         let mut offset = self.offset.lock().await;
@@ -107,13 +106,12 @@ impl RegexPatternChecker {
 #[async_trait]
 impl ReadinessChecker for RegexPatternChecker {
     async fn check(&self) -> bool {
-        let mut file = match tokio::fs::OpenOptions::new()
+        let Ok(mut file) = tokio::fs::OpenOptions::new()
             .read(true)
             .open(&self.path)
             .await
-        {
-            Ok(f) => f,
-            Err(_) => return false,
+        else {
+            return false;
         };
 
         let mut offset = self.offset.lock().await;
@@ -297,8 +295,8 @@ pub async fn readiness_loop(
         if checker.check().await {
             let elapsed = start.elapsed().as_millis() as u64;
             let mut store = store.lock().await;
-            if let Some(job) = store.get_mut(&id) {
-                if let Ok(()) = job.transition(JobState::Ready) {
+            if let Some(job) = store.get_mut(&id)
+                && let Ok(()) = job.transition(JobState::Ready) {
                     job.ready_at = Some(chrono::Utc::now());
                     job.consecutive_failures = 0;
                     let _ = crate::state::write_status(job).await;
@@ -309,7 +307,6 @@ pub async fn readiness_loop(
                     );
                     return;
                 }
-            }
             return;
         }
 
@@ -319,7 +316,7 @@ pub async fn readiness_loop(
 
 /// Port conflict pre-check: tries to connect immediately (async).
 pub async fn check_port_available(port: u16) -> bool {
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("127.0.0.1:{port}");
     TcpStream::connect(&addr).await.is_err()
 }
 

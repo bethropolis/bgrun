@@ -70,9 +70,9 @@ pub async fn run(
 
     // Try to resolve from bgrun.toml if cmd is a single word matching a job name
     let mut resolved_args: Option<RunArgs> = None;
-    if cmd.len() == 1 {
-        if let Some(resolved) = try_resolve_from_config(&cmd[0]).await {
-            cmd = resolved.cmd.clone();
+    if cmd.len() == 1
+        && let Some(resolved) = try_resolve_from_config(&cmd[0]).await {
+            cmd.clone_from(&resolved.cmd);
             name = name.or(resolved.name.clone());
             workspace = workspace.or(resolved.workspace.clone());
             if flags.ready_when.is_none() && flags.ready_when_regex.is_none()
@@ -93,7 +93,6 @@ pub async fn run(
             flags.pty = flags.pty || resolved.pty;
             resolved_args = Some(resolved);
         }
-    }
 
     // Single-element strings that didn't match a config job: run via shell
     if cmd.len() == 1 {
@@ -113,8 +112,8 @@ pub async fn run(
     let mut client = DaemonClient::connect(&socket_path).await?;
 
     // --replace: kill any alive job with the same name first (best effort).
-    if flags.replace {
-        if let Some(ref n) = name {
+    if flags.replace
+        && let Some(ref n) = name {
             let kill_args = bgrun_proto::KillArgs {
                 id: Some(n.clone()),
                 workspace: None,
@@ -124,7 +123,6 @@ pub async fn run(
                 .send::<serde_json::Value>(Command::Kill(kill_args))
                 .await;
         }
-    }
 
     // Collect terminal and locale env vars to prevent TUI rendering corruption,
     // then overlay explicit --env entries (explicit wins).
@@ -333,7 +331,7 @@ fn print_wait_result(job_id: &str, result: &bgrun_proto::WaitResult, json: bool)
     Ok(())
 }
 
-/// Tries to find and parse a bgrun.toml, returning resolved RunArgs if the name matches.
+/// Tries to find and parse a bgrun.toml, returning resolved `RunArgs` if the name matches.
 async fn try_resolve_from_config(name: &str) -> Option<bgrun_proto::RunArgs> {
     let config_path = find_config(std::env::current_dir().ok()?).await?;
     let content = tokio::fs::read_to_string(&config_path).await.ok()?;

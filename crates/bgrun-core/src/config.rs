@@ -125,12 +125,12 @@ pub enum Error {
     InvalidRestartPolicy { job: String, value: String },
 }
 
-/// Parses a bgrun.toml string into a BgrunToml struct (pure, no I/O).
+/// Parses a bgrun.toml string into a `BgrunToml` struct (pure, no I/O).
 pub fn parse_config(content: &str) -> Result<BgrunToml, Error> {
     toml::from_str(content).map_err(|e| Error::ParseError(e.to_string()))
 }
 
-/// Resolves a named job from the config into RunArgs.
+/// Resolves a named job from the config into `RunArgs`.
 pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error> {
     let job = config
         .jobs
@@ -142,7 +142,7 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         TomlCmd::Array(arr) => arr.clone(),
         TomlCmd::Single(s) => {
             shlex::split(s).ok_or_else(|| Error::ParseError(format!(
-                "failed to parse cmd string for job '{}': unmatched quotes or invalid syntax", name
+                "failed to parse cmd string for job '{name}': unmatched quotes or invalid syntax"
             )))?
         }
     };
