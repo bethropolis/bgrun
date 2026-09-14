@@ -18,6 +18,7 @@ pub struct RunFlags {
     pub ready_when_file: Option<String>,
     pub after: Option<String>,
     pub pty: bool,
+    pub sandbox: bool,
     pub restart: Option<String>,
     pub backoff: Option<String>,
     pub max_retries: Option<u32>,
@@ -91,6 +92,7 @@ pub async fn run(
             flags.after = flags.after.or(resolved.after.clone());
             flags.cwd = flags.cwd.or_else(|| resolved.cwd.clone());
             flags.pty = flags.pty || resolved.pty;
+            flags.sandbox = flags.sandbox || resolved.sandbox;
             resolved_args = Some(resolved);
         }
 
@@ -196,6 +198,34 @@ pub async fn run(
         anyhow::bail!("invalid --pids-max 0: must allow at least one task");
     }
 
+    // Namespace sandbox is loopback-only: network-based readiness, health
+    // checks, and port allocation are all probed from outside the netns and
+    // can never succeed. Reject early instead of hanging until timeouts.
+    // (Flag fields were partially moved by the chains above, so inspect the
+    // resolved strategies here.)
+    if flags.sandbox {
+        if flags.pty {
+            anyhow::bail!("--sandbox requires piped mode and cannot be combined with --pty");
+        }
+        if matches!(
+            readiness,
+            Some(ReadinessStrategy::TcpPort(_) | ReadinessStrategy::HttpPoll(_))
+        ) {
+            anyhow::bail!(
+                "--sandbox cannot be combined with network readiness (--ready-when-port/--ready-when-url)"
+            );
+        }
+        if matches!(
+            health_check,
+            Some(ReadinessStrategy::TcpPort(_) | ReadinessStrategy::HttpPoll(_))
+        ) {
+            anyhow::bail!("--sandbox cannot be combined with network health checks");
+        }
+        if flags.allocate_port.is_some() {
+            anyhow::bail!("--sandbox cannot be combined with --allocate-port");
+        }
+    }
+
     let mut args = RunArgs {
         cmd,
         name,
@@ -208,6 +238,7 @@ pub async fn run(
         memory_max,
         cpu_quota: flags.cpu_quota,
         pids_max: flags.pids_max,
+        sandbox: flags.sandbox,
         pty: flags.pty,
         max_runtime_ms: flags.max_runtime_ms,
         env,
@@ -232,6 +263,7 @@ pub async fn run(
         args.memory_max = args.memory_max.or(resolved.memory_max);
         args.cpu_quota = args.cpu_quota.or(resolved.cpu_quota);
         args.pids_max = args.pids_max.or(resolved.pids_max);
+        args.sandbox = args.sandbox || resolved.sandbox;
         args.max_runtime_ms = args.max_runtime_ms.or(resolved.max_runtime_ms);
         args.max_rss_mb = args.max_rss_mb.or(resolved.max_rss_mb);
         args.pty_cols = args.pty_cols.or(resolved.pty_cols);

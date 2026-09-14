@@ -20,7 +20,7 @@ bgrun-core = { path = "../bgrun-core" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-nix = { workspace = true, features = ["process", "signal", "user", "fs"] }
+nix = { workspace = true, features = ["process", "signal", "user", "fs", "sched"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 directories = { workspace = true }

@@ -47,7 +47,7 @@ _bgrun() {
                     _values 'job id' $ids
                     ;;
                 list|kill|clean)
-                    _arguments '--workspace[Filter by workspace]:workspace:->workspaces' '--force[Skip confirmation]'
+                    _arguments '--workspace[Filter by workspace]:workspace:->workspaces'
                     ;;
                 run)
                     _arguments \
@@ -68,6 +68,7 @@ _bgrun() {
                         '--memory-max=[cgroup memory cap (Linux)]:size:' \
                         '--cpu-quota=[cgroup CPU percent (Linux)]:percent:' \
                         '--pids-max=[cgroup task cap (Linux)]:count:' \
+                        '--sandbox[Namespace isolation (Linux, piped)]' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \

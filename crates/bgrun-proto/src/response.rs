@@ -33,6 +33,8 @@ pub struct JobRecord {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pids_max: Option<u32>,
     #[serde(skip_serializing_if = "is_false", default)]
+    pub sandbox: bool,
+    #[serde(skip_serializing_if = "is_false", default)]
     pub pty: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_runtime_ms: Option<u64>,

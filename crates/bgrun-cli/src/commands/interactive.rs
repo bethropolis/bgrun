@@ -415,6 +415,7 @@ async fn start_job_flow(workspace: Option<String>) -> Result<()> {
         memory_max: None,
         cpu_quota: None,
         pids_max: None,
+        sandbox: false,
         pty_cols: None,
         pty_rows: None,
         max_rss_mb: None,

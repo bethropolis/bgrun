@@ -55,6 +55,7 @@ bgrun wait <id> --timeout 30s
 | `bgrun clean [--workspace <ws>]` | Remove all terminated jobs |
 | `bgrun export <id> [--file <p>] [--level <l>] [--since <d>]` | Dump log history (incl. rotated) to a file |
 | `bgrun run --memory-max <size> --cpu-quota <pct> --pids-max <n>` | Hard cgroup v2 caps (Linux; run fails if unenforceable — use `--max-rss` for portable best-effort) |
+| `bgrun run --sandbox <cmd...>` | Namespace isolation: loopback-only network + private IPC (Linux, piped mode; rootless adds a user ns). Cannot combine with `--pty` or network readiness/health |
 | `bgrun run-group <name> [name...]` | Start multiple named jobs in parallel |
 
 ### `bgrun run` flags

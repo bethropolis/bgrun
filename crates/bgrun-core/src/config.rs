@@ -91,6 +91,7 @@ pub struct JobConfig {
     pub cpu_quota: Option<u32>,
     #[serde(rename = "pids-max")]
     pub pids_max: Option<u32>,
+    pub sandbox: Option<bool>,
     pub workspace: Option<String>,
     pub after: Option<String>,
     pub pty: Option<bool>,
@@ -232,6 +233,7 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         memory_max,
         cpu_quota: job.cpu_quota,
         pids_max: job.pids_max,
+        sandbox: job.sandbox.unwrap_or(false),
         pty: job.pty.unwrap_or(false),
         max_runtime_ms: job.max_runtime_ms,
         max_rss_mb: job.max_rss_mb,
@@ -389,12 +391,14 @@ cmd = "true"
 memory-max = "512M"
 cpu-quota = 50
 pids-max = 64
+sandbox = true
 "#;
         let config = parse_config(toml).unwrap();
         let args = resolve_job_args("limited", &config).unwrap();
         assert_eq!(args.memory_max, Some(512 * 1024 * 1024));
         assert_eq!(args.cpu_quota, Some(50));
         assert_eq!(args.pids_max, Some(64));
+        assert!(args.sandbox);
     }
 
     #[test]

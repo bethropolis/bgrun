@@ -103,6 +103,10 @@ enum Commands {
         #[arg(long = "pids-max")]
         pids_max: Option<u32>,
 
+        /// Isolate the job in new network+IPC namespaces (Linux only, piped mode)
+        #[arg(long)]
+        sandbox: bool,
+
         /// PTY columns (default 80)
         #[arg(long)]
         cols: Option<u16>,
@@ -474,6 +478,7 @@ async fn main() -> Result<()> {
             memory_max,
             cpu_quota,
             pids_max,
+            sandbox,
             cols,
             rows,
             max_rss,
@@ -509,6 +514,7 @@ async fn main() -> Result<()> {
                 memory_max,
                 cpu_quota,
                 pids_max,
+                sandbox,
                 pty_cols: cols,
                 pty_rows: rows,
                 max_rss_mb: max_rss,

@@ -50,6 +50,7 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l log-keep -d "Rotated l
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l memory-max -d "cgroup memory cap (Linux)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cpu-quota -d "cgroup CPU percent (Linux)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l pids-max -d "cgroup task cap (Linux)"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l sandbox -d "Namespace isolation (Linux, piped)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cols -d "PTY columns"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l rows -d "PTY rows"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-rss -d "Max RSS in MB"
@@ -97,7 +98,6 @@ complete -c bgrun -n "__fish_seen_subcommand_from status" -s n -l name -d "Job n
 # Kill flags
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -s n -l name -d "Job name"
 complete -c bgrun -n "__fish_seen_subcommand_from kill" -l workspace -d "Workspace to kill"
-complete -c bgrun -n "__fish_seen_subcommand_from kill" -s f -l force -d "Skip confirmation"
 
 # Stop / restart flags
 complete -c bgrun -n "__fish_seen_subcommand_from stop restart" -l timeout -d "Grace period before SIGKILL"

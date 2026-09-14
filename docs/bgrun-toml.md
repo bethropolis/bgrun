@@ -45,6 +45,7 @@ restart = "on-crash"
 | `memory-max` | integer or string | cgroup v2 `memory.max`: bytes or human (`"512M"`). Linux only; the run fails if the kernel won't enforce it. |
 | `cpu-quota` | integer | cgroup v2 CPU quota as percent of one CPU (`50` = half). Linux only. |
 | `pids-max` | integer | cgroup v2 `pids.max`. Linux only. |
+| `sandbox` | bool | Isolate the job in new network + IPC namespaces (Linux only, piped mode). See `--sandbox`. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
 | `pty` | bool | Allocate a pseudo-terminal for the child process. |

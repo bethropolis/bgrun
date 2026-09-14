@@ -145,6 +145,23 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         child_cmd.current_dir(cwd);
     }
     child_cmd.process_group(0);
+    // Namespace sandbox: new network + IPC namespaces (plus a user
+    // namespace with a self UID/GID map for unprivileged callers).
+    #[cfg(target_os = "linux")]
+    if args.sandbox {
+        use std::os::unix::process::CommandExt;
+        let uid = nix::unistd::getuid();
+        let gid = nix::unistd::getgid();
+        unsafe {
+            child_cmd.as_std_mut().pre_exec(move || {
+                crate::sandbox::sandbox_pre_exec(uid, gid)
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if args.sandbox {
+        anyhow::bail!("--sandbox requires Linux with user/network namespaces");
+    }
     child_cmd.stdin(std::process::Stdio::piped());
     child_cmd.stdout(std::process::Stdio::piped());
     child_cmd.stderr(std::process::Stdio::piped());
@@ -240,6 +257,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     job.memory_max = args.memory_max;
     job.cpu_quota = args.cpu_quota;
     job.pids_max = args.pids_max;
+    job.sandbox = args.sandbox;
     job.pty = args.pty;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;
@@ -639,6 +657,7 @@ fn run_args_from_job(job: &Job) -> RunArgs {
         memory_max: job.memory_max,
         cpu_quota: job.cpu_quota,
         pids_max: job.pids_max,
+        sandbox: job.sandbox,
         pty: job.pty,
         max_runtime_ms: job.max_runtime_ms,
         env: job.env.clone(),
@@ -769,6 +788,16 @@ async fn spawn_pty_job(
 ) -> Result<JobRecord> {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+    // portable_pty offers no pre_exec hook, so sandboxed jobs need piped I/O.
+    #[cfg(target_os = "linux")]
+    if args.sandbox {
+        anyhow::bail!("--sandbox requires piped mode and cannot be combined with --pty");
+    }
+    #[cfg(not(target_os = "linux"))]
+    if args.sandbox {
+        anyhow::bail!("--sandbox requires Linux with user/network namespaces");
+    }
+
     let pty_system = native_pty_system();
     let cols = args.pty_cols.unwrap_or(80);
     let rows = args.pty_rows.unwrap_or(24);
@@ -897,6 +926,7 @@ async fn spawn_pty_job(
     job.memory_max = args.memory_max;
     job.cpu_quota = args.cpu_quota;
     job.pids_max = args.pids_max;
+    job.sandbox = args.sandbox;
     job.pty = true;
     job.max_runtime_ms = args.max_runtime_ms;
     job.max_rss_mb = args.max_rss_mb;

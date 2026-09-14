@@ -119,6 +119,7 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l log-keep -d "Rotated l
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l memory-max -d "cgroup memory cap (Linux)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cpu-quota -d "cgroup CPU percent (Linux)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l pids-max -d "cgroup task cap (Linux)"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l sandbox -d "Namespace isolation (Linux, piped)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l cols -d "PTY columns"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l rows -d "PTY rows"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-rss -d "Max RSS in MB"
@@ -221,7 +222,7 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --memory-max --cpu-quota --pids-max --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --memory-max --cpu-quota --pids-max --sandbox --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         stop|restart)
@@ -313,6 +314,7 @@ _bgrun() {
                         '--memory-max=[cgroup memory cap (Linux)]:size:' \
                         '--cpu-quota=[cgroup CPU percent (Linux)]:percent:' \
                         '--pids-max=[cgroup task cap (Linux)]:count:' \
+                        '--sandbox[Namespace isolation (Linux, piped)]' \
                         '--cols=[PTY columns]:number:' \
                         '--rows=[PTY rows]:number:' \
                         '--max-rss=[Max RSS in MB]:mb:' \

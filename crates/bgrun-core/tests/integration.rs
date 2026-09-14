@@ -146,6 +146,7 @@ async fn test_proto_serialization_roundtrip() {
         memory_max: Some(512 * 1024 * 1024),
         cpu_quota: Some(50),
         pids_max: Some(64),
+        sandbox: true,
         pty: true,
         max_runtime_ms: Some(600_000),
         max_rss_mb: None,

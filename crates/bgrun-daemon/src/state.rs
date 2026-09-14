@@ -160,6 +160,7 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         job.memory_max = record.memory_max;
         job.cpu_quota = record.cpu_quota;
         job.pids_max = record.pids_max;
+        job.sandbox = record.sandbox;
         job.pty = record.pty;
         job.max_runtime_ms = record.max_runtime_ms;
         job.max_rss_mb = record.max_rss_mb;

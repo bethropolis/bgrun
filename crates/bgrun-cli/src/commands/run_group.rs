@@ -36,6 +36,7 @@ pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
                 memory_max: None,
                 cpu_quota: None,
                 pids_max: None,
+                sandbox: false,
                 pty: false,
                 max_runtime_ms: None,
                 max_rss_mb: None,

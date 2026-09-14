@@ -5,5 +5,7 @@ pub mod log_manager;
 pub mod orphan;
 pub mod readiness;
 pub mod runner;
+#[cfg(target_os = "linux")]
+pub mod sandbox;
 pub mod server;
 pub mod state;

@@ -35,6 +35,7 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--memory-max <SIZE>` | Hard memory cap via cgroups v2, e.g. `512M` (Linux only; fails the run if unenforceable) |
 | `--cpu-quota <PCT>` | CPU quota as percent of one CPU, e.g. `50` = half a CPU, `200` = two CPUs (Linux only) |
 | `--pids-max <N>` | Cap tasks (processes + threads) in the job's cgroup (Linux only) |
+| `--sandbox` | Isolate the job in new network + IPC namespaces (Linux only, piped mode). Rootless jobs additionally enter a user namespace with a self UID/GID map. The job sees loopback only — incompatible with `--pty`, network readiness/health checks, and `--allocate-port` (rejected client-side) |
 | `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
 | `--max-runtime <D>` | Kill the job after this duration (e.g. `30s`, `5m`) |
 | `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |

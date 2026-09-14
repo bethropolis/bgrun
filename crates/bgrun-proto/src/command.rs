@@ -31,6 +31,10 @@ pub struct RunArgs {
     /// cgroup v2 `pids.max` (Linux only).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pids_max: Option<u32>,
+    /// Isolate the job in new network+IPC namespaces (Linux only; rootless
+    /// jobs additionally get a user namespace with a self UID/GID map).
+    #[serde(default)]
+    pub sandbox: bool,
     pub pty: bool,
     pub max_runtime_ms: Option<u64>,
     pub env: HashMap<String, String>,
