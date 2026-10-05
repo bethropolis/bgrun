@@ -962,8 +962,12 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
             };
 
             let log_path = crate::state::job_dir(&job_id).join("stdout.log");
-            let mut cursor = get_file_size(&log_path).await;
-            let mut line_offset = count_lines_up_to(&log_path, cursor).await;
+            // Scan the log from the start, then keep polling forward. Seeding
+            // the cursor at EOF made `expect` blind to anything already
+            // logged: asking whether an error had occurred would always time
+            // out, even with the answer sitting in the log.
+            let mut cursor = 0u64;
+            let mut line_offset = 0u64;
 
             // Compile the regex once up front: recompiling per line is
             // wasteful, and an invalid pattern should fail fast.
@@ -1343,27 +1347,6 @@ fn args_summary(cmd: &Command) -> String {
     }
 }
 
-/// Counts the number of newlines in a file up to the given byte offset.
-async fn count_lines_up_to(path: &std::path::Path, offset: u64) -> u64 {
-    use tokio::io::AsyncReadExt;
-
-    if offset == 0 {
-        return 0;
-    }
-    let Ok(mut file) = tokio::fs::OpenOptions::new().read(true).open(path).await else {
-        return 0;
-    };
-    if file.seek(std::io::SeekFrom::Start(0)).await.is_err() {
-        return 0;
-    }
-    let to_read = offset.min(10 * 1024 * 1024) as usize; // cap at 10MB
-    let mut buf = vec![0u8; to_read];
-    let Ok(n) = file.read(&mut buf).await else {
-        return 0;
-    };
-    buf[..n].iter().filter(|&&b| b == b'\n').count() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1379,5 +1362,103 @@ mod tests {
         };
         let response = dispatch(request, Arc::new(Mutex::new(JobStore::new()))).await;
         assert_eq!(response["ok"], false);
+    }
+
+    /// Regression: `expect` seeded its scan at EOF, so it could only ever match
+    /// output written *after* the call. Asking whether a pattern was already in
+    /// the log always timed out.
+    #[tokio::test]
+    async fn expect_matches_pattern_already_in_log() {
+        use bgrun_core::Job;
+        use bgrun_proto::JobState;
+
+        let id = "expect-history-test";
+        let job_dir = crate::state::job_dir(id);
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+        tokio::fs::create_dir_all(&job_dir).await.unwrap();
+        tokio::fs::write(
+            job_dir.join("stdout.log"),
+            concat!(
+                r#"{"t":"2026-01-01T00:00:00.000Z","s":"stdout","c":"booting"}"#,
+                "\n",
+                r#"{"t":"2026-01-01T00:00:01.000Z","s":"stdout","c":"listening on :8080"}"#,
+                "\n",
+                r#"{"t":"2026-01-01T00:00:02.000Z","s":"stdout","c":"all good"}"#,
+                "\n",
+            ),
+        )
+        .await
+        .unwrap();
+
+        let store = Arc::new(Mutex::new(JobStore::new()));
+        {
+            let mut job = Job::new(id.into(), vec!["true".into()], Some("t".into()), None);
+            job.state = JobState::Running;
+            store.lock().await.insert(job);
+        }
+
+        let response = dispatch(
+            Request {
+                id: "req-1".into(),
+                command: Command::Expect {
+                    id: id.into(),
+                    pattern: "listening on".into(),
+                    is_regex: false,
+                    timeout_ms: 200,
+                },
+            },
+            store,
+        )
+        .await;
+
+        assert_eq!(response["ok"], true, "response: {response}");
+        assert_eq!(response["data"]["matched"], true, "response: {response}");
+        assert_eq!(response["data"]["line_number"], 2);
+        assert_eq!(response["data"]["content"], "listening on :8080");
+
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+    }
+
+    /// A pattern that never appears still times out and reports no match.
+    #[tokio::test]
+    async fn expect_reports_no_match_for_absent_pattern() {
+        use bgrun_core::Job;
+        use bgrun_proto::JobState;
+
+        let id = "expect-absent-test";
+        let job_dir = crate::state::job_dir(id);
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+        tokio::fs::create_dir_all(&job_dir).await.unwrap();
+        tokio::fs::write(
+            job_dir.join("stdout.log"),
+            "{\"t\":\"2026-01-01T00:00:00.000Z\",\"s\":\"stdout\",\"c\":\"booting\"}\n",
+        )
+        .await
+        .unwrap();
+
+        let store = Arc::new(Mutex::new(JobStore::new()));
+        {
+            let mut job = Job::new(id.into(), vec!["true".into()], Some("t".into()), None);
+            job.state = JobState::Running;
+            store.lock().await.insert(job);
+        }
+
+        let response = dispatch(
+            Request {
+                id: "req-1".into(),
+                command: Command::Expect {
+                    id: id.into(),
+                    pattern: "will-never-appear".into(),
+                    is_regex: false,
+                    timeout_ms: 100,
+                },
+            },
+            store,
+        )
+        .await;
+
+        assert_eq!(response["data"]["matched"], false, "response: {response}");
+
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
     }
 }

@@ -23,6 +23,15 @@ use bgrun_proto::LogLine;
 static SYSINFO_SYSTEM: LazyLock<Arc<std::sync::Mutex<sysinfo::System>>> =
     LazyLock::new(|| Arc::new(std::sync::Mutex::new(sysinfo::System::new())));
 
+/// Per-job count of lines written to the log file.
+///
+/// Doubles as the true line number for live-streamed lines
+/// (`tail --follow`), which are broadcast as they are written and so have no
+/// file offset to number them from. Reset on rotation, since a rotation
+/// starts a fresh log file.
+pub static LOG_LINE_COUNTERS: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Global map of job IDs to their stdin handles (piped mode).
 pub static STDIN_HANDLES: LazyLock<Mutex<HashMap<String, tokio::process::ChildStdin>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -443,6 +452,7 @@ async fn handle_job_exit(id: String, store: Arc<Mutex<JobStore>>, exit_code: Opt
     JOB_BROADCASTS.lock().await.remove(&id);
     LOG_BROADCASTS.lock().await.remove(&id);
     LOG_WRITE_LOCKS.lock().await.remove(&id);
+    LOG_LINE_COUNTERS.lock().await.remove(&id);
     SCREEN_BUFFERS.lock().await.remove(&id);
     // Drop the job's cgroup (empty now that its processes are gone).
     #[cfg(target_os = "linux")]
@@ -1509,6 +1519,9 @@ async fn capture_output(
                         .open(&log_path)
                         .await
                 {
+                    // The rotated file is renamed away and a fresh one starts,
+                    // so live line numbers restart at 1.
+                    LOG_LINE_COUNTERS.lock().await.insert(id.to_string(), 0);
                     file = new_file;
                 }
             }
@@ -1566,6 +1579,15 @@ async fn write_ts_line(file: &mut tokio::fs::File, line: &[u8], id: &str, label:
     };
     let _guard = lock.lock().await;
 
+    // Number under the per-job write lock so stdout and stderr cannot hand out
+    // the same number.
+    let line_number = {
+        let mut counters = LOG_LINE_COUNTERS.lock().await;
+        let counter = counters.entry(id.to_string()).or_insert(0);
+        *counter += 1;
+        *counter
+    };
+
     if file.write_all(json.as_bytes()).await.is_err() {
         error!(id = %id, label = %label, "failed to write log entry");
         return;
@@ -1576,7 +1598,7 @@ async fn write_ts_line(file: &mut tokio::fs::File, line: &[u8], id: &str, label:
 
     // Broadcast the line for StreamLogs subscribers
     let log_line = LogLine {
-        line_number: 0,
+        line_number,
         content: content_for_broadcast.clone(),
         timestamp: Some(entry.t.clone()),
     };
@@ -1626,8 +1648,14 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     }
 
     // Broadcast the line for StreamLogs subscribers
+    let line_number = {
+        let mut counters = LOG_LINE_COUNTERS.blocking_lock();
+        let counter = counters.entry(id.to_string()).or_insert(0);
+        *counter += 1;
+        *counter
+    };
     let log_line = LogLine {
-        line_number: 0,
+        line_number,
         content: content_for_broadcast.clone(),
         timestamp: Some(entry.t.clone()),
     };
@@ -1720,6 +1748,8 @@ fn capture_pty_output(
                         crate::log_manager::rotate_files_blocking(d, &rotation).unwrap_or(false)
                     });
                     if rotated && let Ok(new_file) = reopen(log_path) {
+                        // Fresh log file: live line numbers restart at 1.
+                        LOG_LINE_COUNTERS.blocking_lock().insert(id.to_string(), 0);
                         file = new_file;
                     }
                 }

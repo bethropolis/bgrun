@@ -6,26 +6,39 @@ use bgrun_proto::{JobRecord, JobStatus};
 use chrono::{DateTime, Utc};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Notify trigger for the reactive auto-shutdown monitor.
 /// Called whenever a job spawns or exits.
 pub static LIFECYCLE_NOTIFY: LazyLock<tokio::sync::Notify> =
     LazyLock::new(tokio::sync::Notify::new);
 
+/// Distinguishes concurrent temp files for the same target path.
+static TMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 /// Atomically writes `data` to `path` with owner-only permissions.
 ///
 /// Writes to a temp sibling then renames, so a crash mid-write can never
 /// leave a truncated/corrupt state file behind.
+///
+/// The temp name carries the daemon pid and a per-call sequence number.
+/// `status.json` is written from several tasks for the same job (readiness
+/// loop, health monitor, exit/stop/restart handlers), and a single shared
+/// temp path made concurrent writers clobber each other's file, so one
+/// writer's rename failed with `NotFound` and could persist stale data.
 async fn atomic_write(path: &std::path::Path, data: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let tmp = path.with_extension("json.tmp");
+    let seq = TMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
     tokio::fs::write(&tmp, data)
         .await
         .with_context(|| format!("failed to write {}", tmp.display()))?;
     let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .with_context(|| format!("failed to persist {}", path.display()))
+    if let Err(error) = tokio::fs::rename(&tmp, path).await {
+        // Never leave the temp file behind for a failed write.
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error).with_context(|| format!("failed to persist {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Writes durable metadata for a job.
@@ -222,5 +235,44 @@ mod tests {
     #[test]
     fn socket_path_ends_with_daemon_socket() {
         assert!(socket_path().ends_with("daemon.sock"));
+    }
+
+    /// Regression: concurrent writers used to share one temp path, so all but
+    /// the last rename failed with `NotFound` and the loser reported an error.
+    #[tokio::test]
+    async fn atomic_write_survives_concurrent_writers() {
+        let dir = std::path::Path::new("/tmp").join(format!("bgrun-atomic-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let target = dir.join("status.json");
+
+        let mut handles = Vec::new();
+        for i in 0..16u32 {
+            let target = target.clone();
+            handles.push(tokio::spawn(async move {
+                atomic_write(&target, &format!("{{\"writer\":{i}}}")).await
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .expect("task should not panic")
+                .expect("concurrent atomic_write must not fail");
+        }
+
+        // Exactly one writer's payload survives, and it is intact JSON.
+        let final_text = tokio::fs::read_to_string(&target).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&final_text).unwrap();
+        assert!(parsed["writer"].is_u64());
+
+        // No temp files left behind.
+        let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(names, vec!["status.json".to_string()]);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }
