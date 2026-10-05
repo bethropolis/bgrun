@@ -152,6 +152,11 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         use std::os::unix::process::CommandExt;
         let uid = nix::unistd::getuid();
         let gid = nix::unistd::getgid();
+        // SAFETY: `pre_exec` only registers a closure to run in the child
+        // between fork and exec. The closure captures two `Copy` uids, does
+        // no allocation, and `sandbox_pre_exec` is async-signal-safe (raw
+        // syscalls on stack data). Registering it cannot fail.
+        #[allow(unsafe_code)]
         unsafe {
             child_cmd
                 .as_std_mut()
