@@ -56,14 +56,25 @@ pub async fn tail(
                         }
                     });
                     if let Some(d) = digest_obj {
-                        let total = d.get("total_lines").and_then(serde_json::Value::as_u64).unwrap_or(0);
-                        let errors = d.get("errors").and_then(serde_json::Value::as_u64).unwrap_or(0);
-                        let warnings = d.get("warnings").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                        let total = d
+                            .get("total_lines")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
+                        let errors = d
+                            .get("errors")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
+                        let warnings = d
+                            .get("warnings")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
                         println!("Lines: {total}  Errors: {errors}  Warnings: {warnings}");
                         if let Some(err) = d.get("last_error").and_then(|v| v.as_str()) {
                             println!(
                                 "Last error (line {}): {err}",
-                                d.get("last_error_line").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                                d.get("last_error_line")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0)
                             );
                         }
                     } else {
@@ -80,12 +91,13 @@ pub async fn tail(
                     }
                     // If combined with lines, print them too
                     if let Some(log_lines) = data["lines"].as_array()
-                        && !log_lines.is_empty() {
-                            println!();
-                            for line in log_lines {
-                                print_log_line(line);
-                            }
+                        && !log_lines.is_empty()
+                    {
+                        println!();
+                        for line in log_lines {
+                            print_log_line(line);
                         }
+                    }
                 } else if let Some(log_lines) = data["lines"].as_array() {
                     for line in log_lines {
                         print_log_line(line);
@@ -100,7 +112,8 @@ pub async fn tail(
         // Follow mode: stream only live lines — history was already printed
         // by the Tail above, so replaying it would duplicate output.
         if follow {
-            stream_logs_follow(&socket_path, &id, level.clone(), filter_regex.clone(), json).await?;
+            stream_logs_follow(&socket_path, &id, level.clone(), filter_regex.clone(), json)
+                .await?;
         }
     }
 
@@ -158,7 +171,9 @@ async fn stream_logs_follow(
                 }
                 if json {
                     println!("{trimmed}");
-                } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) { print_log_line(&val) }
+                } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    print_log_line(&val);
+                }
             }
         }
     }

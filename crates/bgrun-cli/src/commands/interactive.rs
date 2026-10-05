@@ -57,12 +57,11 @@ pub async fn start_menu() -> Result<()> {
                 let _ = crate::commands::clean::clean(workspace.clone(), false, true).await;
             }
             "Change workspace filter" => {
-                workspace = match Text::new("Workspace filter (blank for all):")
-                    .prompt_skippable()?
-                {
-                    Some(w) if !w.trim().is_empty() => Some(w.trim().to_string()),
-                    _ => None,
-                };
+                workspace =
+                    match Text::new("Workspace filter (blank for all):").prompt_skippable()? {
+                        Some(w) if !w.trim().is_empty() => Some(w.trim().to_string()),
+                        _ => None,
+                    };
             }
             _ => break,
         }
@@ -101,7 +100,10 @@ fn render_dashboard(records: &[JobRecord], workspace: Option<&str>) {
         .count();
     let terminal = records.len().saturating_sub(alive);
     let scope = workspace.unwrap_or("all workspaces");
-    println!("── {scope}: {} job(s) · {alive} alive · {terminal} terminated ──", records.len());
+    println!(
+        "── {scope}: {} job(s) · {alive} alive · {terminal} terminated ──",
+        records.len()
+    );
     if records.is_empty() {
         println!("No jobs here yet — start one from the menu below.");
     }
@@ -179,7 +181,8 @@ async fn job_menu(record: JobRecord) -> Result<()> {
                 let _ = crate::commands::screen::screen(id.clone(), lines, false).await;
             }
             "Diff (only new lines)" => {
-                let _ = crate::commands::diff::diff(id.clone(), None, None, false, None, false).await;
+                let _ =
+                    crate::commands::diff::diff(id.clone(), None, None, false, None, false).await;
             }
             "Export logs to file" => {
                 let file = prompt_optional(
@@ -225,8 +228,7 @@ async fn job_menu(record: JobRecord) -> Result<()> {
                     .with_default(false)
                     .prompt_skippable()?;
                 if confirm.unwrap_or(false) {
-                    let _ =
-                        crate::commands::kill::kill(Some(id.clone()), None, true, false).await;
+                    let _ = crate::commands::kill::kill(Some(id.clone()), None, true, false).await;
                     break;
                 }
             }
@@ -295,9 +297,7 @@ async fn tail_flow(id: &str) -> Result<()> {
 }
 
 async fn send_flow(id: &str) -> Result<()> {
-    let Some(data) = Text::new("Text to send (blank for just Enter):")
-        .prompt_skippable()?
-    else {
+    let Some(data) = Text::new("Text to send (blank for just Enter):").prompt_skippable()? else {
         return Ok(());
     };
     let payload = if data.is_empty() {
@@ -331,9 +331,7 @@ async fn wait_flow(id: &str) -> Result<()> {
 }
 
 async fn expect_flow(id: &str) -> Result<()> {
-    let pattern = match Text::new("Pattern to wait for:")
-        .prompt_skippable()?
-    {
+    let pattern = match Text::new("Pattern to wait for:").prompt_skippable()? {
         Some(p) if !p.trim().is_empty() => p.trim().to_string(),
         _ => return Ok(()),
     };
@@ -348,7 +346,8 @@ async fn expect_flow(id: &str) -> Result<()> {
         Some(t) if !t.trim().is_empty() => t.trim().to_string(),
         _ => "60s".to_string(),
     };
-    let _ = crate::commands::expect::expect(id.to_string(), pattern, is_regex, timeout, false).await;
+    let _ =
+        crate::commands::expect::expect(id.to_string(), pattern, is_regex, timeout, false).await;
     Ok(())
 }
 

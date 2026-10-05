@@ -24,6 +24,7 @@ pub struct Job {
     pub exit_code: Option<i32>,
     pub restart_count: u32,
     pub last_diff_cursor: u64,
+    pub last_diff_lines: u64,
     pub consecutive_failures: u32,
     pub readiness: Option<ReadinessStrategy>,
     pub restart: Option<RestartPolicy>,
@@ -65,6 +66,7 @@ impl Job {
             exit_code: None,
             restart_count: 0,
             last_diff_cursor: 0,
+            last_diff_lines: 0,
             consecutive_failures: 0,
             readiness: None,
             restart: None,
@@ -96,12 +98,20 @@ impl Job {
     pub fn transition(&mut self, next: JobState) -> Result<(), Error> {
         let valid = matches!(
             (&self.state, &next),
-            (JobState::Starting,
-JobState::Running | JobState::Ready | JobState::Exited | JobState::Crashed |
-JobState::Killed) |
-(JobState::Running,
-JobState::Ready | JobState::Exited | JobState::Crashed | JobState::Killed) |
-(JobState::Ready, JobState::Exited | JobState::Crashed | JobState::Killed)
+            (
+                JobState::Starting,
+                JobState::Running
+                    | JobState::Ready
+                    | JobState::Exited
+                    | JobState::Crashed
+                    | JobState::Killed
+            ) | (
+                JobState::Running,
+                JobState::Ready | JobState::Exited | JobState::Crashed | JobState::Killed
+            ) | (
+                JobState::Ready,
+                JobState::Exited | JobState::Crashed | JobState::Killed
+            )
         );
 
         if !valid {

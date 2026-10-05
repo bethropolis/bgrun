@@ -5,13 +5,13 @@ use bgrun_proto::{Command, KillArgs, RunArgs, TailArgs};
 use tokio::sync::Mutex;
 
 /// Helper to create a test store.
-async fn setup() -> Arc<Mutex<JobStore>> {
+fn setup() -> Arc<Mutex<JobStore>> {
     Arc::new(Mutex::new(JobStore::new()))
 }
 
 #[tokio::test]
 async fn test_job_lifecycle() {
-    let store = setup().await;
+    let store = setup();
 
     // Create a job
     let mut job = Job::new(
@@ -99,7 +99,7 @@ async fn test_job_lifecycle() {
 
 #[tokio::test]
 async fn test_idempotent_named_jobs() {
-    let store = setup().await;
+    let store = setup();
 
     let mut job1 = Job::new(
         "j1".into(),

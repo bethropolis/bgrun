@@ -47,9 +47,9 @@ pub struct RunFlags {
 fn parse_env_list(entries: &[String]) -> Result<HashMap<String, String>> {
     let mut out = HashMap::new();
     for entry in entries {
-        let (key, val) = entry.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("invalid --env {entry:?}: expected KEY=VAL")
-        })?;
+        let (key, val) = entry
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("invalid --env {entry:?}: expected KEY=VAL"))?;
         if key.is_empty() {
             anyhow::bail!("invalid --env {entry:?}: key must not be empty");
         }
@@ -72,29 +72,32 @@ pub async fn run(
     // Try to resolve from bgrun.toml if cmd is a single word matching a job name
     let mut resolved_args: Option<RunArgs> = None;
     if cmd.len() == 1
-        && let Some(resolved) = try_resolve_from_config(&cmd[0]).await {
-            cmd.clone_from(&resolved.cmd);
-            name = name.or(resolved.name.clone());
-            workspace = workspace.or(resolved.workspace.clone());
-            if flags.ready_when.is_none() && flags.ready_when_regex.is_none()
-                && flags.ready_when_port.is_none() && flags.ready_when_url.is_none()
-                && flags.ready_when_file.is_none()
-            {
-                match resolved.readiness.clone() {
-                    Some(ReadinessStrategy::LogPattern(p)) => flags.ready_when = Some(p),
-                    Some(ReadinessStrategy::LogPatternRegex(p)) => flags.ready_when_regex = Some(p),
-                    Some(ReadinessStrategy::TcpPort(p)) => flags.ready_when_port = Some(p),
-                    Some(ReadinessStrategy::HttpPoll(u)) => flags.ready_when_url = Some(u),
-                    Some(ReadinessStrategy::FileExists(f)) => flags.ready_when_file = Some(f),
-                    None => {}
-                }
+        && let Some(resolved) = try_resolve_from_config(&cmd[0]).await
+    {
+        cmd.clone_from(&resolved.cmd);
+        name = name.or(resolved.name.clone());
+        workspace = workspace.or(resolved.workspace.clone());
+        if flags.ready_when.is_none()
+            && flags.ready_when_regex.is_none()
+            && flags.ready_when_port.is_none()
+            && flags.ready_when_url.is_none()
+            && flags.ready_when_file.is_none()
+        {
+            match resolved.readiness.clone() {
+                Some(ReadinessStrategy::LogPattern(p)) => flags.ready_when = Some(p),
+                Some(ReadinessStrategy::LogPatternRegex(p)) => flags.ready_when_regex = Some(p),
+                Some(ReadinessStrategy::TcpPort(p)) => flags.ready_when_port = Some(p),
+                Some(ReadinessStrategy::HttpPoll(u)) => flags.ready_when_url = Some(u),
+                Some(ReadinessStrategy::FileExists(f)) => flags.ready_when_file = Some(f),
+                None => {}
             }
-            flags.after = flags.after.or(resolved.after.clone());
-            flags.cwd = flags.cwd.or_else(|| resolved.cwd.clone());
-            flags.pty = flags.pty || resolved.pty;
-            flags.sandbox = flags.sandbox || resolved.sandbox;
-            resolved_args = Some(resolved);
         }
+        flags.after = flags.after.or(resolved.after.clone());
+        flags.cwd = flags.cwd.or_else(|| resolved.cwd.clone());
+        flags.pty = flags.pty || resolved.pty;
+        flags.sandbox = flags.sandbox || resolved.sandbox;
+        resolved_args = Some(resolved);
+    }
 
     // Single-element strings that didn't match a config job: run via shell
     if cmd.len() == 1 {
@@ -115,26 +118,23 @@ pub async fn run(
 
     // --replace: kill any alive job with the same name first (best effort).
     if flags.replace
-        && let Some(ref n) = name {
-            let kill_args = bgrun_proto::KillArgs {
-                id: Some(n.clone()),
-                workspace: None,
-            };
-            // Ignore errors: job may not exist, which is the common case.
-            let _ = client
-                .send::<serde_json::Value>(Command::Kill(kill_args))
-                .await;
-        }
+        && let Some(ref n) = name
+    {
+        let kill_args = bgrun_proto::KillArgs {
+            id: Some(n.clone()),
+            workspace: None,
+        };
+        // Ignore errors: job may not exist, which is the common case.
+        let _ = client
+            .send::<serde_json::Value>(Command::Kill(kill_args))
+            .await;
+    }
 
     // Collect terminal and locale env vars to prevent TUI rendering corruption,
     // then overlay explicit --env entries (explicit wins).
     let mut env = HashMap::new();
     for (key, val) in std::env::vars() {
-        if key == "TERM"
-            || key == "COLORTERM"
-            || key == "LANG"
-            || key.starts_with("LC_")
-        {
+        if key == "TERM" || key == "COLORTERM" || key == "LANG" || key.starts_with("LC_") {
             env.insert(key, val);
         }
     }
@@ -282,7 +282,9 @@ pub async fn run(
         anyhow::bail!("run: {err}");
     }
 
-    let record = response.data.ok_or_else(|| anyhow::anyhow!("run: empty response from daemon"))?;
+    let record = response
+        .data
+        .ok_or_else(|| anyhow::anyhow!("run: empty response from daemon"))?;
     print_job(&record, output_mode(json))?;
 
     // --wait: block until Ready (single-shot run+wait for agents).
@@ -348,7 +350,10 @@ fn print_wait_result(job_id: &str, result: &bgrun_proto::WaitResult, json: bool)
                     .exit_code
                     .map(|c| format!(", exit_code={c}"))
                     .unwrap_or_default();
-                println!("Job {job_id} reached terminal state {s}{ec} ({}ms)", result.elapsed_ms);
+                println!(
+                    "Job {job_id} reached terminal state {s}{ec} ({}ms)",
+                    result.elapsed_ms
+                );
             } else {
                 println!(
                     "Job {job_id} did not become ready within {}ms",
@@ -387,5 +392,3 @@ async fn find_config(start: std::path::PathBuf) -> Option<std::path::PathBuf> {
         current = current.parent()?.to_path_buf();
     }
 }
-
-

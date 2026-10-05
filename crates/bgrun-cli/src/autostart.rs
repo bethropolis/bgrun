@@ -22,13 +22,14 @@ pub async fn ensure_daemon_running(socket_path: &Path) -> Result<()> {
         .spawn()
         .context("failed to spawn daemon")?;
 
-    // Poll for socket to appear (10ms × 100 = 1s timeout)
-    for _ in 0..100 {
+    // Poll for socket to appear (10ms × 500 = 5s timeout; spawning +
+    // setsid + Tokio init + bind routinely exceeds 1s on loaded CI/ARM)
+    for _ in 0..500 {
         tokio::time::sleep(Duration::from_millis(10)).await;
         if UnixStream::connect(socket_path).await.is_ok() {
             return Ok(());
         }
     }
 
-    anyhow::bail!("daemon failed to start within 1 second")
+    anyhow::bail!("daemon failed to start within 5 seconds")
 }

@@ -1,6 +1,6 @@
 # Command Reference
 
-bgrun has 18 subcommands. All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
+bgrun has 21 subcommands (19 user-facing, plus hidden `completions` and `mcp`). All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
 
 The daemon auto-starts on the first CLI invocation. You don't need to manually start it.
 
@@ -724,6 +724,63 @@ The `--active-ids` and `--workspaces` flags produce live data from the daemon, u
 # In ~/.config/fish/completions/bgrun.fish:
 complete -c bgrun -n "__fish_seen_subcommand_from status kill wait tail diff send stats attach expect" -a "(bgrun completions --active-ids)"
 complete -c bgrun -n "__fish_seen_subcommand_from list kill; and __fish_prev_arg_in --workspace" -a "(bgrun completions --workspaces)"
+```
+
+---
+
+## mcp
+
+Stateless stdio MCP (Model Context Protocol) server for agent integrations. Speaks JSON-RPC 2.0 over stdin/stdout (newline-delimited frames) and bridges to the daemon over its Unix socket. The daemon auto-starts on the first tool call.
+
+```
+bgrun mcp
+```
+
+`mcp` is not an interactive command: its stdout carries only JSON-RPC frames, so it is meant to be spawned by an MCP client (editor, agent harness) with `bgrun mcp` as the server command. All responses are text content; daemon-side failures come back as tool results with `isError: true`, while malformed requests return JSON-RPC errors (`-32700` parse, `-32601` unknown method, `-32602` invalid params).
+
+Requests are handled **one at a time**, in the order received. A long-running tool (`wait`, `expect`) therefore blocks every later call until it returns, and there is no cancellation path — prefer `diff` polling for anything that must interleave with other calls.
+
+**Methods**
+
+| Method | Behavior |
+|---|---|
+| `initialize` | Negotiates the protocol version (`2025-06-18`, `2025-03-26`, `2024-11-05`) and reports server info + tool capabilities |
+| `notifications/initialized` | Accepted silently (no reply) |
+| `ping` | Replies with an empty result |
+| `tools/list` | Lists the 15 tools below with JSON Schema inputs |
+| `tools/call` | Executes a tool against the daemon; stateless (fresh connection per call) |
+
+**Tools**
+
+| Tool | Maps to | Notes |
+|---|---|---|
+| `run` | `bgrun run` | Takes `RunArgs` (same fields as the schema command); single-word `cmd` entries resolve against `bgrun.toml` jobs |
+| `list` | `list` | Optional `workspace` filter |
+| `status` | `status` | `id` accepts job ID or name handle |
+| `kill` | `kill` | `id`, or `workspace` to kill every job in a workspace |
+| `stop` | `stop` | Graceful: SIGTERM then SIGKILL after `timeout_ms` (default 10000) |
+| `restart` | `restart` | Stop (if alive) then re-spawn from the stored definition |
+| `tail` | `tail` | `lines`, `level`, `stream`, `filter_regex`, `digest`, `strip_ansi`; no follow (stateless) |
+| `diff` | `diff` | Incremental poll: returns only lines added since the previous `diff` call for that job |
+| `wait` | `wait` | Blocks until ready/terminal/`timeout_ms` (default 60000) |
+| `send` | `send` | Writes to a PTY job's stdin (append `\n` for Enter) |
+| `stats` | `stats` | CPU %, RSS MB, uptime |
+| `run_group` | `run-group` | `jobs` is an array of `run` argument objects |
+| `expect` | `expect` | Block until `pattern` (substring or regex) appears in the log |
+| `screen` | `screen` | Last N rendered rows from a PTY job's screen buffer |
+| `clean` | `clean` | Removes terminal-state jobs, optional `workspace` scope |
+
+Not exposed as tools: `attach`, log streaming, and `resize` need a hijacked, long-lived connection (poll `diff` instead), and `export` writes to a caller-supplied path on the host filesystem, so it stays CLI-only.
+
+**Example session**
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list","arguments":{}}}' \
+  | bgrun mcp
 ```
 
 ---

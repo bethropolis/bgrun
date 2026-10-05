@@ -13,7 +13,10 @@ pub async fn screen(id: String, lines: usize, json: bool) -> Result<()> {
     let mut client = DaemonClient::connect(&socket_path).await?;
 
     let response = client
-        .send::<serde_json::Value>(Command::Screen { id: id.clone(), lines })
+        .send::<serde_json::Value>(Command::Screen {
+            id: id.clone(),
+            lines,
+        })
         .await?;
 
     if !response.ok {

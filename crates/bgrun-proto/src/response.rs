@@ -69,6 +69,10 @@ pub struct JobStatus {
     pub restart_count: u32,
     #[serde(default)]
     pub last_diff_cursor: u64,
+    /// Line count at `last_diff_cursor`, so `diff_since` can resume line
+    /// numbering in O(delta) without rescanning the file from offset 0.
+    #[serde(default)]
+    pub last_diff_lines: u64,
     #[serde(default)]
     pub consecutive_failures: u32,
 }

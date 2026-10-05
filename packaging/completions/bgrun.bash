@@ -7,7 +7,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill help"
+    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill mcp help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))

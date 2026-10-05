@@ -57,9 +57,10 @@ impl JobStore {
         }
         // 2. Exact name match
         if let Some(uuid) = self.name_index.get(query)
-            && self.jobs.contains_key(uuid) {
-                return Some(uuid.clone());
-            }
+            && self.jobs.contains_key(uuid)
+        {
+            return Some(uuid.clone());
+        }
         // 3. Unique prefix match (min 4 chars)
         if query.len() >= 4 {
             let matches: Vec<&String> = self
@@ -114,8 +115,8 @@ mod tests {
         Job::new(
             id.into(),
             vec!["cmd".into()],
-            name.map(|s| s.into()),
-            workspace.map(|s| s.into()),
+            name.map(str::to_owned),
+            workspace.map(str::to_owned),
         )
     }
 

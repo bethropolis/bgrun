@@ -28,17 +28,18 @@ pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     let json = serde_json::to_string(&request)?;
 
     // Write request, then wrap in BufReader for response reading
-    let (mut read_half, mut write_half) = tokio::io::split(stream);
+    let (read_half, mut write_half) = tokio::io::split(stream);
     write_half.write_all(json.as_bytes()).await?;
     write_half.write_all(b"\n").await?;
     write_half.flush().await?;
 
-    // Read initial response line
+    // Read initial response line. The BufReader may have buffered PTY bytes
+    // beyond the first line; keep it (and any buffered remainder) alive by
+    // moving it into run_attach_loop instead of dropping it.
+    let mut reader = BufReader::new(read_half);
     let mut response_buf = String::new();
-    {
-        let mut reader = BufReader::new(&mut read_half);
-        reader.read_line(&mut response_buf).await?;
-    }
+    reader.read_line(&mut response_buf).await?;
+    let buffered = reader.buffer().to_vec();
 
     let response: serde_json::Value = serde_json::from_str(response_buf.trim())?;
     if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
@@ -50,39 +51,43 @@ pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     }
 
     // Notify user of interactive instructions before switching terminal modes
-    println!(
-        "Attaching to job '{id}'. Press Ctrl+P followed by Ctrl+Q to detach."
-    );
+    println!("Attaching to job '{id}'. Press Ctrl+P followed by Ctrl+Q to detach.");
 
     // Enable raw mode with safety guard (restores terminal even on panic)
     let _guard = RawModeGuard::new()?;
 
-    
-    run_attach_loop(id, read_half, write_half).await
+    run_attach_loop(id, reader, write_half, buffered).await
 }
 
 async fn run_attach_loop(
     id: String,
-    mut stream_read: tokio::io::ReadHalf<UnixStream>,
+    mut stream_read: BufReader<tokio::io::ReadHalf<UnixStream>>,
     mut stream_write: tokio::io::WriteHalf<UnixStream>,
+    buffered: Vec<u8>,
 ) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
 
     // Synchronize PTY size on initial attach
     if let Ok((cols, rows)) = crossterm::terminal::size()
-        && let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await {
-            let _ = client
-                .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
-                    id: id.clone(),
-                    cols,
-                    rows,
-                })
-                .await;
-        }
+        && let Ok(mut client) = crate::client::DaemonClient::connect(&socket_path).await
+    {
+        let _ = client
+            .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
+                id: id.clone(),
+                cols,
+                rows,
+            })
+            .await;
+    }
 
-    // Spawn task to forward socket output → stdout
+    // Spawn task to forward socket output → stdout. Any bytes already sitting
+    // in the BufReader (read ahead past the control line) go first.
     let stdout_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
+        if !buffered.is_empty() {
+            stdout.write_all(&buffered).await?;
+            stdout.flush().await?;
+        }
         let mut buf = [0u8; 8192];
         loop {
             match stream_read.read(&mut buf).await {
@@ -103,9 +108,9 @@ async fn run_attach_loop(
     let id_clone = id.clone();
     let socket_path_clone = socket_path.clone();
     let resize_task: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-        let Ok(mut winch) = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::window_change(),
-        ) else {
+        let Ok(mut winch) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+        else {
             return;
         };
 
@@ -113,15 +118,15 @@ async fn run_attach_loop(
             if let Ok((cols, rows)) = crossterm::terminal::size()
                 && let Ok(mut client) =
                     crate::client::DaemonClient::connect(&socket_path_clone).await
-                {
-                    let _ = client
-                        .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
-                            id: id_clone.clone(),
-                            cols,
-                            rows,
-                        })
-                        .await;
-                }
+            {
+                let _ = client
+                    .send::<serde_json::Value>(bgrun_proto::Command::ResizePty {
+                        id: id_clone.clone(),
+                        cols,
+                        rows,
+                    })
+                    .await;
+            }
         }
     });
 

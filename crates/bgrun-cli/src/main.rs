@@ -5,6 +5,8 @@ mod autostart;
 mod client;
 pub mod commands;
 mod duration;
+mod mcp;
+mod mcp_types;
 pub mod output;
 
 #[derive(Parser)]
@@ -339,23 +341,23 @@ enum Commands {
         names: Vec<String>,
     },
 
-        /// Send data to a job's stdin
-        Send {
-            /// Job ID or name
-            id: String,
+    /// Send data to a job's stdin
+    Send {
+        /// Job ID or name
+        id: String,
 
-            /// Data to send
-            #[arg(required_unless_present_any = ["enter"])]
-            data: Option<String>,
+        /// Data to send
+        #[arg(required_unless_present_any = ["enter"])]
+        data: Option<String>,
 
-            /// Append a newline to the data (deprecated: use --enter instead)
-            #[arg(long)]
-            newline: bool,
+        /// Append a newline to the data (deprecated: use --enter instead)
+        #[arg(long)]
+        newline: bool,
 
-            /// Send an Enter (newline), optionally with data
-            #[arg(long)]
-            enter: bool,
-        },
+        /// Send an Enter (newline), optionally with data
+        #[arg(long)]
+        enter: bool,
+    },
 
     /// Show resource stats for a running job
     Stats {
@@ -438,6 +440,9 @@ enum Commands {
         #[command(subcommand)]
         command: SkillCommands,
     },
+
+    /// Run a stateless stdio MCP server (JSON-RPC 2.0 over stdin/stdout)
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -459,6 +464,9 @@ async fn main() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
+        // MCP mode is a pure stdio JSON-RPC server: only framed responses may
+        // be written to stdout, so dispatch it before any other output.
+        Some(Commands::Mcp) => return mcp::run().await,
         Some(Commands::Run {
             cmd,
             name,
@@ -546,7 +554,9 @@ async fn main() -> Result<()> {
             force,
         }) => {
             let id = match (id, name) {
-                (Some(_), Some(_)) => anyhow::bail!("kill: specify either a positional ID or --name, not both"),
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("kill: specify either a positional ID or --name, not both")
+                }
                 (Some(id), None) => Some(id),
                 (None, Some(name)) => Some(name),
                 (None, None) => None,
@@ -574,7 +584,18 @@ async fn main() -> Result<()> {
             filter_regex,
         }) => {
             let id = resolve_id_or_name(id, name, "tail")?;
-            commands::tail::tail(id, lines, digest, level, stream, strip_ansi, follow, filter_regex, json).await?;
+            commands::tail::tail(
+                id,
+                lines,
+                digest,
+                level,
+                stream,
+                strip_ansi,
+                follow,
+                filter_regex,
+                json,
+            )
+            .await?;
         }
         Some(Commands::Diff {
             id,
@@ -599,12 +620,28 @@ async fn main() -> Result<()> {
             since,
         }) => {
             let id = resolve_id_or_name(id, name, "export")?;
-            commands::export::export(id, file, lines, level, stream, strip_ansi, filter_regex, since, json).await?;
+            commands::export::export(
+                id,
+                file,
+                lines,
+                level,
+                stream,
+                strip_ansi,
+                filter_regex,
+                since,
+                json,
+            )
+            .await?;
         }
         Some(Commands::RunGroup { names }) => {
             commands::run_group::run_group(names, json).await?;
         }
-        Some(Commands::Send { id, data, newline, enter }) => {
+        Some(Commands::Send {
+            id,
+            data,
+            newline,
+            enter,
+        }) => {
             if enter {
                 let payload = match data {
                     Some(d) => format!("{d}\n"),
@@ -616,7 +653,8 @@ async fn main() -> Result<()> {
                 let d = data.ok_or_else(|| anyhow::anyhow!("send: --newline requires data"))?;
                 commands::send::send(id, format!("{d}\n"), json).await?;
             } else {
-                let d = data.ok_or_else(|| anyhow::anyhow!("send: provide data, --enter, or --newline"))?;
+                let d = data
+                    .ok_or_else(|| anyhow::anyhow!("send: provide data, --enter, or --newline"))?;
                 commands::send::send(id, d, json).await?;
             }
         }
@@ -637,7 +675,12 @@ async fn main() -> Result<()> {
         Some(Commands::Schema { command }) => {
             commands::schema::print_schema(command.as_deref())?;
         }
-        Some(Commands::Completions { active_ids, workspaces, shell, man }) => {
+        Some(Commands::Completions {
+            active_ids,
+            workspaces,
+            shell,
+            man,
+        }) => {
             commands::completions::completions(active_ids, workspaces, shell, man).await?;
         }
         Some(Commands::Screen { id, lines }) => {
@@ -667,7 +710,9 @@ async fn main() -> Result<()> {
 
 fn resolve_id_or_name(id: Option<String>, name: Option<String>, cmd: &str) -> Result<String> {
     match (id, name) {
-        (Some(_), Some(_)) => anyhow::bail!("{cmd}: specify either a positional ID or --name, not both"),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("{cmd}: specify either a positional ID or --name, not both")
+        }
         (Some(id), None) => Ok(id),
         (None, Some(name)) => Ok(name),
         (None, None) => anyhow::bail!("{cmd}: a job ID or --name is required"),

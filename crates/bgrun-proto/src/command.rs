@@ -4,6 +4,11 @@ use std::collections::HashMap;
 
 use crate::types::{ReadinessStrategy, RestartPolicy};
 
+/// Default `lines` for tail-like arguments when the caller omits it.
+fn default_tail_lines() -> usize {
+    50
+}
+
 /// Arguments for the Run command.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct RunArgs {
@@ -35,8 +40,11 @@ pub struct RunArgs {
     /// jobs additionally get a user namespace with a self UID/GID map).
     #[serde(default)]
     pub sandbox: bool,
+    #[serde(default)]
     pub pty: bool,
+    #[serde(default)]
     pub max_runtime_ms: Option<u64>,
+    #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub after: Option<String>,
@@ -61,7 +69,9 @@ pub struct RunArgs {
 /// Arguments for the Kill command.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct KillArgs {
+    #[serde(default)]
     pub id: Option<String>,
+    #[serde(default)]
     pub workspace: Option<String>,
 }
 
@@ -69,8 +79,11 @@ pub struct KillArgs {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct TailArgs {
     pub id: String,
+    #[serde(default = "default_tail_lines")]
     pub lines: usize,
+    #[serde(default)]
     pub digest: bool,
+    #[serde(default)]
     pub level: Option<String>,
     #[serde(default)]
     pub strip_ansi: bool,
@@ -93,16 +106,26 @@ pub struct TailArgs {
 #[serde(tag = "command", content = "args")]
 pub enum Command {
     Run(RunArgs),
-    Status { id: String },
-    List { workspace: Option<String> },
+    Status {
+        id: String,
+    },
+    List {
+        workspace: Option<String>,
+    },
     Kill(KillArgs),
     /// Graceful stop: SIGTERM (escalating to SIGKILL after `timeout_ms`) if
     /// alive; also marks terminal-state jobs Killed so pending policy
     /// restarts are suppressed (unlike Kill, never errors on terminal jobs).
-    Stop { id: String, timeout_ms: u64 },
+    Stop {
+        id: String,
+        timeout_ms: u64,
+    },
     /// Stop (if alive) and re-spawn the job from its stored definition,
     /// returning the new record. No backoff is applied.
-    Restart { id: String, timeout_ms: u64 },
+    Restart {
+        id: String,
+        timeout_ms: u64,
+    },
     Tail(TailArgs),
     Diff {
         id: String,
@@ -116,20 +139,38 @@ pub enum Command {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         filter_regex: Option<String>,
     },
-    Wait { id: String, timeout_ms: u64 },
-    Send { id: String, data: String },
-    Stats { id: String },
-    RunGroup { jobs: Vec<RunArgs> },
+    Wait {
+        id: String,
+        timeout_ms: u64,
+    },
+    Send {
+        id: String,
+        data: String,
+    },
+    Stats {
+        id: String,
+    },
+    RunGroup {
+        jobs: Vec<RunArgs>,
+    },
     Expect {
         id: String,
         pattern: String,
         is_regex: bool,
         timeout_ms: u64,
     },
-    Attach { id: String },
-    ResizePty { id: String, cols: u16, rows: u16 },
+    Attach {
+        id: String,
+    },
+    ResizePty {
+        id: String,
+        cols: u16,
+        rows: u16,
+    },
     /// Remove all terminal-state (crashed/exited/killed) jobs.
-    Clean { workspace: Option<String> },
+    Clean {
+        workspace: Option<String>,
+    },
     /// Stream log lines in real time (connection-hijacking, like Attach).
     StreamLogs {
         id: String,
@@ -142,7 +183,10 @@ pub enum Command {
         filter_regex: Option<String>,
     },
     /// Read the last N lines from the in-memory screen buffer (non-blocking).
-    Screen { id: String, lines: usize },
+    Screen {
+        id: String,
+        lines: usize,
+    },
     /// Export (filtered) log history — spanning rotated files — to a file.
     Export {
         id: String,

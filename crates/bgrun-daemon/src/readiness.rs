@@ -63,7 +63,11 @@ impl ReadinessChecker for LogPatternChecker {
             return false;
         }
 
-        let new_bytes = String::from_utf8_lossy(&buf);
+        // Only consume complete lines: a concurrent writer may have left a
+        // partial NDJSON fragment at the tail. Hold back bytes after the last
+        // newline so the next check sees the reassembled line.
+        let consumable = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        let new_bytes = String::from_utf8_lossy(&buf[..consumable]);
         // Logs are NDJSON envelopes; match against the decoded content so
         // anchored patterns and metadata substrings behave correctly.
         let found = new_bytes.lines().any(|raw| {
@@ -71,8 +75,8 @@ impl ReadinessChecker for LogPatternChecker {
             content.contains(&self.pattern)
         });
 
-        // Update offset to end of what we just read
-        *offset = start + buf.len() as u64;
+        // Update offset past only the complete lines just scanned
+        *offset = start + consumable as u64;
 
         found
     }
@@ -126,13 +130,16 @@ impl ReadinessChecker for RegexPatternChecker {
             return false;
         }
 
-        let new_bytes = String::from_utf8_lossy(&buf);
+        // Only consume complete lines (see LogPatternChecker): hold back a
+        // trailing partial write for the next poll interval.
+        let consumable = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        let new_bytes = String::from_utf8_lossy(&buf[..consumable]);
         let found = new_bytes.lines().any(|raw| {
             let (_, _, content) = crate::log_manager::parse_line(raw);
             self.pattern.is_match(&content)
         });
 
-        *offset = start + buf.len() as u64;
+        *offset = start + consumable as u64;
 
         found
     }
@@ -233,21 +240,16 @@ pub fn build_checker(
             job_dir.join("stdout.log"),
             pattern.clone(),
         )),
-        ReadinessStrategy::LogPatternRegex(pattern) => {
-            match regex::Regex::new(pattern) {
-                Ok(re) => Box::new(RegexPatternChecker::new(
+        ReadinessStrategy::LogPatternRegex(pattern) => match regex::Regex::new(pattern) {
+            Ok(re) => Box::new(RegexPatternChecker::new(job_dir.join("stdout.log"), re)),
+            Err(e) => {
+                warn!(error = %e, "invalid readiness regex pattern, falling back to substring match");
+                Box::new(LogPatternChecker::new(
                     job_dir.join("stdout.log"),
-                    re,
-                )),
-                Err(e) => {
-                    warn!(error = %e, "invalid readiness regex pattern, falling back to substring match");
-                    Box::new(LogPatternChecker::new(
-                        job_dir.join("stdout.log"),
-                        pattern.clone(),
-                    ))
-                }
+                    pattern.clone(),
+                ))
             }
-        }
+        },
         ReadinessStrategy::TcpPort(port) => Box::new(TcpPortChecker::new(*port)),
         ReadinessStrategy::HttpPoll(url) => Box::new(HttpPollChecker::new(url.clone())),
         ReadinessStrategy::FileExists(path) => {
@@ -296,17 +298,18 @@ pub async fn readiness_loop(
             let elapsed = start.elapsed().as_millis() as u64;
             let mut store = store.lock().await;
             if let Some(job) = store.get_mut(&id)
-                && let Ok(()) = job.transition(JobState::Ready) {
-                    job.ready_at = Some(chrono::Utc::now());
-                    job.consecutive_failures = 0;
-                    let _ = crate::state::write_status(job).await;
-                    info!(
-                        id = %id,
-                        elapsed_ms = %elapsed,
-                        "job became ready"
-                    );
-                    return;
-                }
+                && let Ok(()) = job.transition(JobState::Ready)
+            {
+                job.ready_at = Some(chrono::Utc::now());
+                job.consecutive_failures = 0;
+                let _ = crate::state::write_status(job).await;
+                info!(
+                    id = %id,
+                    elapsed_ms = %elapsed,
+                    "job became ready"
+                );
+                return;
+            }
             return;
         }
 
@@ -331,14 +334,14 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         // Test with sync std::net since this is a sync test
-        assert!(std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_err());
+        assert!(std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_err());
     }
 
     #[test]
     fn test_port_unavailable_when_bound() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok());
+        assert!(std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok());
         drop(listener);
     }
 

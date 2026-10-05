@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 
 /// Newtype wrapper for bgrun durations in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,8 +83,8 @@ mod tests {
     fn test_parse_duration() {
         assert_eq!("500ms".parse::<BgrunDuration>().unwrap().0, 500);
         assert_eq!("5s".parse::<BgrunDuration>().unwrap().0, 5000);
-        assert_eq!("2m".parse::<BgrunDuration>().unwrap().0, 120000);
-        assert_eq!("1h".parse::<BgrunDuration>().unwrap().0, 3600000);
+        assert_eq!("2m".parse::<BgrunDuration>().unwrap().0, 120_000);
+        assert_eq!("1h".parse::<BgrunDuration>().unwrap().0, 3_600_000);
         assert_eq!("30".parse::<BgrunDuration>().unwrap().0, 30000);
         assert!("".parse::<BgrunDuration>().is_err());
         assert!("abc".parse::<BgrunDuration>().is_err());

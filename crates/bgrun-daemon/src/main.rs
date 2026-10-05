@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     // closure / SSH disconnects so its jobs keep running.
     let sig_shutdown = shutdown.clone();
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut term = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
         let mut int = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
@@ -89,7 +89,6 @@ async fn main() -> Result<()> {
 
     // Spawn the reactive, event-driven auto-shutdown monitor (0% idle polling)
     let store_clone = store.clone();
-    let socket_path_clone = socket_path.clone();
     let shutdown_monitor = shutdown.clone();
     tokio::spawn(async move {
         use bgrun_daemon::state::LIFECYCLE_NOTIFY;
@@ -148,13 +147,11 @@ async fn main() -> Result<()> {
                                         timeout_secs = timeout_seconds,
                                         "idle timeout reached reactively, initiating graceful auto-shutdown"
                                     );
-                                    let _ = tokio::fs::remove_file(&socket_path_clone).await;
-                                    // Leave no stale runtime artifacts behind.
-                                    let _ = tokio::fs::remove_file(
-                                        state::state_dir().join("daemon.pid"),
-                                    )
-                                    .await;
-                                    std::process::exit(0);
+                                    // Graceful shutdown: cancelling the token
+                                    // lets `main` run its post-server cleanup
+                                    // (socket + pid removal) instead of
+                                    // bypassing destructors via process::exit.
+                                    shutdown_monitor.cancel();
                                 }
                             }
                         }

@@ -4,7 +4,7 @@ use inquire::Confirm;
 
 use crate::autostart::ensure_daemon_running;
 use crate::client::DaemonClient;
-use crate::output::{output_mode, OutputMode};
+use crate::output::{OutputMode, output_mode};
 
 /// Removes all terminal-state (crashed/exited/killed) jobs.
 pub async fn clean(workspace: Option<String>, json: bool, force: bool) -> Result<()> {
@@ -14,9 +14,7 @@ pub async fn clean(workspace: Option<String>, json: bool, force: bool) -> Result
         } else {
             "Remove all terminated jobs?"
         };
-        let confirm = Confirm::new(prompt)
-            .with_default(false)
-            .prompt()?;
+        let confirm = Confirm::new(prompt).with_default(false).prompt()?;
         if !confirm {
             println!("Aborted.");
             return Ok(());

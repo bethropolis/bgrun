@@ -20,9 +20,10 @@ pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
         .iter()
         .map(|name| {
             if let Some(ref cfg) = config
-                && let Ok(args) = bgrun_core::config::resolve_job_args(name, cfg) {
-                    return args;
-                }
+                && let Ok(args) = bgrun_core::config::resolve_job_args(name, cfg)
+            {
+                return args;
+            }
             // Fallback: treat name as a raw command
             RunArgs {
                 cmd: vec![name.clone()],
@@ -42,7 +43,9 @@ pub async fn run_group(names: Vec<String>, json: bool) -> Result<()> {
                 max_rss_mb: None,
                 env: std::collections::HashMap::new(),
                 after: None,
-                cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                cwd: std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned()),
                 allocate_port: None,
                 health_check: None,
                 health_interval_secs: None,
@@ -76,9 +79,10 @@ async fn load_config() -> Option<bgrun_core::BgrunToml> {
     loop {
         let candidate = current.join("bgrun.toml");
         if let Ok(content) = tokio::fs::read_to_string(&candidate).await
-            && let Ok(config) = bgrun_core::config::parse_config(&content) {
-                return Some(config);
-            }
+            && let Ok(config) = bgrun_core::config::parse_config(&content)
+        {
+            return Some(config);
+        }
         if current.join(".git").exists() {
             return None;
         }

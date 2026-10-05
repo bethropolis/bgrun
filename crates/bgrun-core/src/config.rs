@@ -34,8 +34,9 @@ impl TomlSize {
     fn bytes(&self) -> Result<u64, Error> {
         match self {
             TomlSize::Bytes(n) => Ok(*n),
-            TomlSize::Human(s) => parse_human_size(s)
-                .ok_or_else(|| Error::ParseError(format!("invalid size: {s:?}"))),
+            TomlSize::Human(s) => {
+                parse_human_size(s).ok_or_else(|| Error::ParseError(format!("invalid size: {s:?}")))
+            }
         }
     }
 }
@@ -122,7 +123,9 @@ pub enum Error {
     JobNotFound(String),
     #[error("config parse error: {0}")]
     ParseError(String),
-    #[error("job '{job}': invalid restart policy '{value}' (expected 'never', 'on-crash', 'on-failure' or 'always')")]
+    #[error(
+        "job '{job}': invalid restart policy '{value}' (expected 'never', 'on-crash', 'on-failure' or 'always')"
+    )]
     InvalidRestartPolicy { job: String, value: String },
 }
 
@@ -141,11 +144,11 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
     // Parse cmd: array is used directly, single string goes through shlex
     let cmd: Vec<String> = match &job.cmd {
         TomlCmd::Array(arr) => arr.clone(),
-        TomlCmd::Single(s) => {
-            shlex::split(s).ok_or_else(|| Error::ParseError(format!(
+        TomlCmd::Single(s) => shlex::split(s).ok_or_else(|| {
+            Error::ParseError(format!(
                 "failed to parse cmd string for job '{name}': unmatched quotes or invalid syntax"
-            )))?
-        }
+            ))
+        })?,
     };
 
     // Resolve readiness strategy
@@ -195,21 +198,13 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         .map(|u| ReadinessStrategy::HttpPoll(u.clone()))
         .or_else(|| job.health_check_port.map(ReadinessStrategy::TcpPort));
 
-    let log_max_size = job
-        .log_max_size
-        .as_ref()
-        .map(TomlSize::bytes)
-        .transpose()?;
+    let log_max_size = job.log_max_size.as_ref().map(TomlSize::bytes).transpose()?;
     if job.log_keep == Some(0) {
         return Err(Error::ParseError(format!(
             "job '{name}': log-keep must be at least 1"
         )));
     }
-    let memory_max = job
-        .memory_max
-        .as_ref()
-        .map(TomlSize::bytes)
-        .transpose()?;
+    let memory_max = job.memory_max.as_ref().map(TomlSize::bytes).transpose()?;
     if job.cpu_quota == Some(0) {
         return Err(Error::ParseError(format!(
             "job '{name}': cpu-quota must be at least 1"
@@ -328,7 +323,10 @@ workspace = "myproject"
     fn test_resolve_restart_policy() {
         let config = parse_config(sample_toml()).unwrap();
         let args = resolve_job_args("reliable", &config).unwrap();
-        assert_eq!(args.restart, Some(RestartPolicy::OnCrash { backoff_ms: 2000 }));
+        assert_eq!(
+            args.restart,
+            Some(RestartPolicy::OnCrash { backoff_ms: 2000 })
+        );
     }
 
     #[test]
@@ -406,7 +404,10 @@ sandbox = true
         for (key, val) in [("cpu-quota", "0"), ("pids-max", "0")] {
             let toml = format!("[jobs.bad]\ncmd = \"true\"\n{key} = {val}\n");
             let config = parse_config(&toml).unwrap();
-            assert!(resolve_job_args("bad", &config).is_err(), "{key} = 0 must fail");
+            assert!(
+                resolve_job_args("bad", &config).is_err(),
+                "{key} = 0 must fail"
+            );
         }
     }
 
@@ -468,7 +469,9 @@ ready-when-regex = "listening on :\\d+"
         let args = resolve_job_args("api", &config).unwrap();
         assert_eq!(
             args.readiness,
-            Some(ReadinessStrategy::LogPatternRegex("listening on :\\d+".into()))
+            Some(ReadinessStrategy::LogPatternRegex(
+                "listening on :\\d+".into()
+            ))
         );
     }
 

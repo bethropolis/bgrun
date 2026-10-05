@@ -31,25 +31,26 @@ pub async fn completions(
         && let Ok(response) = client
             .send::<Vec<JobRecord>>(Command::List { workspace: None })
             .await
-            && let Some(records) = response.data {
-                if active_ids {
-                    for r in &records {
-                        let id_short = if r.id.len() > 8 { &r.id[..8] } else { &r.id };
-                        let name = r.name.as_deref().unwrap_or("unnamed");
-                        println!("{}\t{} ({})", id_short, name, r.state);
-                    }
-                } else if workspaces {
-                    let mut unique_ws = std::collections::HashSet::new();
-                    for r in &records {
-                        if let Some(ref ws) = r.workspace {
-                            unique_ws.insert(ws.clone());
-                        }
-                    }
-                    for ws in unique_ws {
-                        println!("{ws}");
-                    }
+        && let Some(records) = response.data
+    {
+        if active_ids {
+            for r in &records {
+                let id_short = if r.id.len() > 8 { &r.id[..8] } else { &r.id };
+                let name = r.name.as_deref().unwrap_or("unnamed");
+                println!("{}\t{} ({})", id_short, name, r.state);
+            }
+        } else if workspaces {
+            let mut unique_ws = std::collections::HashSet::new();
+            for r in &records {
+                if let Some(ref ws) = r.workspace {
+                    unique_ws.insert(ws.clone());
                 }
             }
+            for ws in unique_ws {
+                println!("{ws}");
+            }
+        }
+    }
 
     Ok(())
 }
@@ -67,7 +68,8 @@ fn print_man_page() -> Result<()> {
 }
 
 fn print_fish_completions() {
-    println!(r#"# bgrun completions for fish shell
+    println!(
+        r#"# bgrun completions for fish shell
 # Install: bgrun completions --shell fish > ~/.config/fish/completions/bgrun.fish
 
 complete -c bgrun -f
@@ -92,6 +94,7 @@ complete -c bgrun -n "__fish_use_subcommand" -a "export" -d "Export log history 
 complete -c bgrun -n "__fish_use_subcommand" -a "schema" -d "Print JSON Schema for a command's arguments"
 complete -c bgrun -n "__fish_use_subcommand" -a "clean" -d "Remove all terminated jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skills"
+complete -c bgrun -n "__fish_use_subcommand" -a "mcp" -d "Run a stdio MCP server for agent integrations"
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID
@@ -183,7 +186,8 @@ complete -c bgrun -n "__fish_seen_subcommand_from export" -l since -d "Only rece
 # Global flags
 complete -c bgrun -l json -d "Output in JSON format"
 complete -c bgrun -l help -d "Print help" -s h
-"#);
+"#
+    );
 }
 
 fn print_bash_completions() {
@@ -196,7 +200,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill help"
+    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill mcp help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -272,6 +276,7 @@ _bgrun() {
         'schema:Print JSON Schema for a command'
         'clean:Remove all terminated jobs'
         'skill:Manage embedded skills'
+        'mcp:Run a stdio MCP server for agent integrations'
         'help:Print help'
     )
 

@@ -63,13 +63,17 @@ pub fn setup_job_group(job_id: &str, pid: u32, limits: &Limits) -> Result<PathBu
     ))
 }
 
-fn setup_in_base(base: &std::path::Path, job_id: &str, pid: u32, limits: &Limits) -> Result<PathBuf> {
+fn setup_in_base(
+    base: &std::path::Path,
+    job_id: &str,
+    pid: u32,
+    limits: &Limits,
+) -> Result<PathBuf> {
     let dir = base.join(job_id);
     // Remove a stale group from a previous incarnation (ignore failures:
     // a non-empty group simply gets reused).
     let _ = std::fs::remove_dir(&dir);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("cannot create {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
 
     // Controllers must be enabled at EVERY level: enabling them in our own
     // `bgrun/` dir (which we own) lets children use them. Best-effort —
@@ -134,8 +138,26 @@ mod tests {
     #[test]
     fn limits_empty_detection() {
         assert!(Limits::default().is_empty());
-        assert!(!Limits { memory_max: Some(1), ..Default::default() }.is_empty());
-        assert!(!Limits { cpu_quota_pct: Some(1), ..Default::default() }.is_empty());
-        assert!(!Limits { pids_max: Some(1), ..Default::default() }.is_empty());
+        assert!(
+            !Limits {
+                memory_max: Some(1),
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !Limits {
+                cpu_quota_pct: Some(1),
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !Limits {
+                pids_max: Some(1),
+                ..Default::default()
+            }
+            .is_empty()
+        );
     }
 }

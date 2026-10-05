@@ -57,6 +57,7 @@ bgrun wait <id> --timeout 30s
 | `bgrun run --memory-max <size> --cpu-quota <pct> --pids-max <n>` | Hard cgroup v2 caps (Linux; run fails if unenforceable — use `--max-rss` for portable best-effort) |
 | `bgrun run --sandbox <cmd...>` | Namespace isolation: loopback-only network + private IPC (Linux, piped mode; rootless adds a user ns). Cannot combine with `--pty` or network readiness/health |
 | `bgrun run-group <name> [name...]` | Start multiple named jobs in parallel |
+| `bgrun mcp` | Serve these commands as MCP tools over stdio (JSON-RPC 2.0) for agent clients |
 
 ### `bgrun run` flags
 

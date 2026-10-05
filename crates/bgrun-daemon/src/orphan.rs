@@ -6,8 +6,8 @@ use bgrun_proto::JobState;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::state::LIFECYCLE_NOTIFY;
 use crate::state;
+use crate::state::LIFECYCLE_NOTIFY;
 
 /// Callback invoked by the orphan monitor when a re-adopted job has crashed,
 /// so the daemon can honor its `OnCrash` restart policy (previously ignored for
@@ -23,10 +23,7 @@ pub type AdoptedCrashHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
 ///
 /// `on_crash` is invoked with the job id whenever an adopted job is observed
 /// to have crashed while being monitored, so its restart policy is honored.
-pub async fn readopt_all(
-    store: Arc<Mutex<JobStore>>,
-    on_crash: AdoptedCrashHandler,
-) -> Result<()> {
+pub async fn readopt_all(store: Arc<Mutex<JobStore>>, on_crash: AdoptedCrashHandler) -> Result<()> {
     let jobs = state::read_all_jobs().await?;
     let mut adopted = Vec::new();
     let mut crashed = 0;
@@ -128,7 +125,9 @@ fn is_process_alive(pid: u32) -> bool {
     // own PID assignment and is passed by value — no pointer or
     // memory-safety concern exists.
     #[allow(unsafe_code)]
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    unsafe {
+        libc::kill(pid as i32, 0) == 0
+    }
 }
 
 /// Verifies the process at `pid` looks like the job's command.

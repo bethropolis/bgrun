@@ -3,9 +3,9 @@ pub use bgrun_proto::paths::{job_dir, socket_path, state_dir};
 use anyhow::{Context, Result};
 use bgrun_core::Job;
 use bgrun_proto::{JobRecord, JobStatus};
+use chrono::{DateTime, Utc};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::LazyLock;
-use chrono::{DateTime, Utc};
 
 /// Notify trigger for the reactive auto-shutdown monitor.
 /// Called whenever a job spawns or exits.
@@ -53,6 +53,7 @@ pub async fn write_status(job: &Job) -> Result<()> {
         ready_at: job.ready_at.map(|t| t.to_rfc3339()),
         restart_count: job.restart_count,
         last_diff_cursor: job.last_diff_cursor,
+        last_diff_lines: job.last_diff_lines,
         consecutive_failures: job.consecutive_failures,
     };
     let json = serde_json::to_string_pretty(&status)?;
@@ -68,7 +69,7 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(jobs),
         Err(err) => {
-            return Err(err).with_context(|| format!("failed to read {}", jobs_dir.display()))
+            return Err(err).with_context(|| format!("failed to read {}", jobs_dir.display()));
         }
     };
 
@@ -80,15 +81,11 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         let meta_json = match tokio::fs::read_to_string(&meta_path).await {
             Ok(m) => m,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::warn!(
-                    "skipping job dir {}: meta.json not found",
-                    dir.display()
-                );
+                tracing::warn!("skipping job dir {}: meta.json not found", dir.display());
                 continue;
             }
             Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read {}", meta_path.display()))
+                return Err(err).with_context(|| format!("failed to read {}", meta_path.display()));
             }
         };
         let record: JobRecord = match serde_json::from_str(&meta_json) {
@@ -151,7 +148,10 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
         job.exit_code = status.as_ref().and_then(|status| status.exit_code);
         job.restart_count = status.as_ref().map_or(0, |status| status.restart_count);
         job.last_diff_cursor = status.as_ref().map_or(0, |status| status.last_diff_cursor);
-        job.consecutive_failures = status.as_ref().map_or(0, |status| status.consecutive_failures);
+        job.last_diff_lines = status.as_ref().map_or(0, |status| status.last_diff_lines);
+        job.consecutive_failures = status
+            .as_ref()
+            .map_or(0, |status| status.consecutive_failures);
         job.readiness = record.readiness;
         job.restart = record.restart;
         job.max_retries = record.max_retries;
@@ -182,10 +182,11 @@ pub async fn read_all_jobs() -> Result<Vec<Job>> {
             match best.get(name) {
                 Some(prev) => {
                     let prev = prev.clone();
-                    if job.started_at > jobs
-                        .iter()
-                        .find(|j| j.id == *prev)
-                        .map_or(job.started_at, |j| j.started_at)
+                    if job.started_at
+                        > jobs
+                            .iter()
+                            .find(|j| j.id == *prev)
+                            .map_or(job.started_at, |j| j.started_at)
                     {
                         stale_ids.insert(prev.clone());
                         best.insert(name.clone(), job.id.clone());

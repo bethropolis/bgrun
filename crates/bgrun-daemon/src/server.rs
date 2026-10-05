@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -31,10 +31,7 @@ pub async fn run_server(
 
     let listener = UnixListener::bind(&socket_path)?;
     // Restrict the socket itself so only the owning user can connect.
-    let _ = std::fs::set_permissions(
-        &socket_path,
-        std::fs::Permissions::from_mode(0o600),
-    );
+    let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
     info!("daemon listening on {}", socket_path.display());
 
     loop {
@@ -81,10 +78,7 @@ fn ensure_private_dir(path: &std::path::Path) -> Result<()> {
     let meta = std::fs::symlink_metadata(path)
         .map_err(|e| anyhow::anyhow!("failed to stat {}: {e}", path.display()))?;
     if meta.file_type().is_symlink() {
-        anyhow::bail!(
-            "refusing to use {}: it is a symlink",
-            path.display()
-        );
+        anyhow::bail!("refusing to use {}: it is a symlink", path.display());
     }
     #[allow(unsafe_code)]
     {
@@ -104,10 +98,7 @@ fn ensure_private_dir(path: &std::path::Path) -> Result<()> {
 
 /// Handles a single connection: reads NDJSON requests, dispatches, writes responses.
 /// For Attach commands, it hijacks the connection for bidirectional byte streaming.
-async fn handle_connection(
-    stream: UnixStream,
-    store: Arc<Mutex<JobStore>>,
-) -> Result<()> {
+async fn handle_connection(stream: UnixStream, store: Arc<Mutex<JobStore>>) -> Result<()> {
     // Peek at the first request without consuming the stream.
     // Attach hijacks the stream, so we cannot split it upfront.
     let first_line = read_first_line(&stream).await;
@@ -123,9 +114,12 @@ async fn handle_connection(
     // If it's an Attach or StreamLogs command, hijack the connection
     match request.command {
         Command::Attach { id } => return handle_attach(id, stream, store).await,
-        Command::StreamLogs { id, cursor, level, filter_regex } => {
-            return handle_stream_logs(id, cursor, level, filter_regex, stream, store).await
-        }
+        Command::StreamLogs {
+            id,
+            cursor,
+            level,
+            filter_regex,
+        } => return handle_stream_logs(id, cursor, level, filter_regex, stream, store).await,
         _ => {}
     }
 
@@ -212,11 +206,7 @@ async fn read_first_line(stream: &UnixStream) -> Option<String> {
 /// 2. Forwards socket reads → PTY writer (stdin)
 /// 3. Forwards broadcast PTY output → socket (stdout)
 /// 4. Returns when either side disconnects or the job exits
-async fn handle_attach(
-    id: String,
-    stream: UnixStream,
-    store: Arc<Mutex<JobStore>>,
-) -> Result<()> {
+async fn handle_attach(id: String, stream: UnixStream, store: Arc<Mutex<JobStore>>) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
     // Resolve name to UUID and verify job is alive+PTY under single lock
@@ -224,10 +214,19 @@ async fn handle_attach(
         let store_ref = store.lock().await;
         let jid = store_ref.resolve_id(&id);
         match jid {
-            Some(jid) if store_ref.get(&jid).is_some_and(|job| job.is_alive() && job.pty) => jid,
+            Some(jid)
+                if store_ref
+                    .get(&jid)
+                    .is_some_and(|job| job.is_alive() && job.pty) =>
+            {
+                jid
+            }
             _ => {
                 let (_reader, mut writer) = stream.into_split();
-                let err = Response::<()>::err("attach".into(), "job not found, not alive, or not a PTY job");
+                let err = Response::<()>::err(
+                    "attach".into(),
+                    "job not found, not alive, or not a PTY job",
+                );
                 let json = serde_json::to_string(&err).unwrap_or_default();
                 let _ = writer.write_all(json.as_bytes()).await;
                 let _ = writer.write_all(b"\n").await;
@@ -261,7 +260,9 @@ async fn handle_attach(
     // Subscribe to the broadcast channel for PTY output (use resolved job_id)
     let rx = {
         let broadcasts = runner::JOB_BROADCASTS.lock().await;
-        broadcasts.get(&job_id).map(tokio::sync::broadcast::Sender::subscribe)
+        broadcasts
+            .get(&job_id)
+            .map(tokio::sync::broadcast::Sender::subscribe)
     };
     let Some(mut rx) = rx else {
         return Ok(());
@@ -365,16 +366,37 @@ async fn handle_stream_logs(
         }
     };
 
-    let filter = regex::Regex::new(filter_regex.as_deref().unwrap_or("$^")).ok();
+    // Fail loud on an invalid regex. Silently dropping the filter would
+    // stream the client's entire unfiltered log to them — for an agent-facing
+    // tool that is a context blowup, not a safe default. (Streaming arrives
+    // here before `dispatch`, so this cannot rely on dispatch validation.)
+    let filter = match filter_regex.as_deref() {
+        None => None,
+        Some(pattern) => match regex::Regex::new(pattern) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                let (_reader, mut writer) = stream.into_split();
+                let err =
+                    Response::<()>::err("stream".into(), format!("invalid filter regex: {e}"));
+                let json = serde_json::to_string(&err).unwrap_or_default();
+                let _ = writer.write_all(json.as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
+                return Ok(());
+            }
+        },
+    };
+
     let matches_filters = move |content: &str| -> bool {
         if let Some(lvl) = level.as_deref()
-            && !content.to_lowercase().contains(&lvl.to_lowercase()) {
-                return false;
-            }
+            && !content.to_lowercase().contains(&lvl.to_lowercase())
+        {
+            return false;
+        }
         if let Some(re) = &filter
-            && !re.is_match(content) {
-                return false;
-            }
+            && !re.is_match(content)
+        {
+            return false;
+        }
         true
     };
 
@@ -430,7 +452,9 @@ async fn handle_stream_logs(
     // Subscribe to the broadcast channel for live LogLine stream
     let rx = {
         let broadcasts = runner::LOG_BROADCASTS.lock().await;
-        broadcasts.get(&job_id).map(tokio::sync::broadcast::Sender::subscribe)
+        broadcasts
+            .get(&job_id)
+            .map(tokio::sync::broadcast::Sender::subscribe)
     };
 
     let Some(mut rx) = rx else {
@@ -490,10 +514,7 @@ async fn handle_stream_logs(
 }
 
 /// Dispatches a command to the appropriate handler.
-async fn dispatch(
-    request: Request,
-    store: Arc<Mutex<JobStore>>,
-) -> serde_json::Value {
+async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::Value {
     let req_id = request.id;
     let cmd_name = format!("{:?}", request.command);
     let audit_args = args_summary(&request.command);
@@ -521,6 +542,7 @@ async fn dispatch(
                         ready_at: job.ready_at.map(|t| t.to_rfc3339()),
                         restart_count: job.restart_count,
                         last_diff_cursor: job.last_diff_cursor,
+                        last_diff_lines: job.last_diff_lines,
                         consecutive_failures: job.consecutive_failures,
                     };
                     match serde_json::to_value(status) {
@@ -577,8 +599,7 @@ async fn dispatch(
                 None => Response::err(req_id.clone(), "id or workspace is required"),
             },
         },
-        Command::Stop { id, timeout_ms } => match runner::stop_job(&id, timeout_ms, store).await
-        {
+        Command::Stop { id, timeout_ms } => match runner::stop_job(&id, timeout_ms, store).await {
             Ok(()) => Response::ok(req_id.clone(), serde_json::json!({"stopped": [id]})),
             Err(e) => Response::err(req_id.clone(), e.to_string()),
         },
@@ -608,8 +629,9 @@ async fn dispatch(
                     let store_ref = store.lock().await;
                     let resolved_id = store_ref.resolve_id(&id);
                     match resolved_id.and_then(|jid| store_ref.get(&jid)) {
-                        Some(job) if job.state == bgrun_proto::JobState::Ready
-                            || job.ready_at.is_some() =>
+                        Some(job)
+                            if job.state == bgrun_proto::JobState::Ready
+                                || job.ready_at.is_some() =>
                         {
                             ready = true;
                             exit_code = job.exit_code;
@@ -667,24 +689,42 @@ async fn dispatch(
                 let jid = store_ref.resolve_id(&id);
                 match jid {
                     Some(ref jid) if store_ref.get(jid).is_some() => jid.clone(),
-                    _ => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                    _ => {
+                        return serde_json::to_value(Response::<()>::err(
+                            req_id.clone(),
+                            "job not found",
+                        ))
+                        .unwrap_or_default();
+                    }
                 }
             };
             let stream_deref = stream.as_deref();
             let level_deref = level.as_deref();
-            let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
+            let regex_ref = filter_regex
+                .as_ref()
+                .and_then(|p| regex::Regex::new(p).ok());
             let regex_deref = regex_ref.as_ref();
             if digest {
                 match crate::log_manager::tail_digest(&job_id).await {
                     Ok(digest) => {
                         // If --lines is also specified, include the last N lines
                         if lines > 0 {
-                            match crate::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
+                            match crate::log_manager::tail_lines(
+                                &job_id,
+                                lines,
+                                stream_deref,
+                                level_deref,
+                                regex_deref,
+                            )
+                            .await
+                            {
                                 Ok(mut log_lines) => {
                                     if strip_ansi {
                                         for line in &mut log_lines {
-                                            let clean = strip_ansi_escapes::strip(line.content.as_bytes());
-                                            line.content = String::from_utf8_lossy(&clean).into_owned();
+                                            let clean =
+                                                strip_ansi_escapes::strip(line.content.as_bytes());
+                                            line.content =
+                                                String::from_utf8_lossy(&clean).into_owned();
                                         }
                                     }
                                     let combined = serde_json::json!({
@@ -693,27 +733,46 @@ async fn dispatch(
                                     });
                                     match serde_json::to_value(combined) {
                                         Ok(val) => Response::ok(req_id.clone(), val),
-                                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+                                        Err(e) => Response::err(
+                                            req_id.clone(),
+                                            format!("serialization error: {e}"),
+                                        ),
                                     }
                                 }
                                 Err(_) => match serde_json::to_value(digest) {
                                     Ok(val) => Response::ok(req_id.clone(), val),
-                                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+                                    Err(e) => Response::err(
+                                        req_id.clone(),
+                                        format!("serialization error: {e}"),
+                                    ),
                                 },
                             }
                         } else {
                             match serde_json::to_value(digest) {
                                 Ok(val) => Response::ok(req_id.clone(), val),
-                                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+                                Err(e) => Response::err(
+                                    req_id.clone(),
+                                    format!("serialization error: {e}"),
+                                ),
                             }
                         }
                     }
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
             } else if let Some(cursor) = cursor_opt {
-                // Cursor-based read for follow mode
-                match crate::log_manager::diff_since(&job_id, cursor, stream_deref, level_deref, regex_deref).await {
-                    Ok((mut log_lines, new_cursor)) => {
+                // Cursor-based read for follow mode (stateless: caller passes
+                // the byte cursor, so no persisted line base is available)
+                match crate::log_manager::diff_since(
+                    &job_id,
+                    cursor,
+                    0,
+                    stream_deref,
+                    level_deref,
+                    regex_deref,
+                )
+                .await
+                {
+                    Ok((mut log_lines, new_cursor, _)) => {
                         // Strip ANSI escape codes if requested
                         if strip_ansi {
                             for line in &mut log_lines {
@@ -735,7 +794,15 @@ async fn dispatch(
                     Err(e) => Response::err(req_id.clone(), e.to_string()),
                 }
             } else {
-                match crate::log_manager::tail_lines(&job_id, lines, stream_deref, level_deref, regex_deref).await {
+                match crate::log_manager::tail_lines(
+                    &job_id,
+                    lines,
+                    stream_deref,
+                    level_deref,
+                    regex_deref,
+                )
+                .await
+                {
                     Ok(mut log_lines) => {
                         // Strip ANSI escape codes if requested
                         if strip_ansi {
@@ -771,18 +838,39 @@ async fn dispatch(
             stream,
             filter_regex,
         } => {
-            // Resolve name to UUID under lock and read cursor atomically
-            let (job_id, cursor) = {
+            // Resolve name to UUID under lock and read (cursor, lines) atomically
+            let (job_id, cursor, line_base) = {
                 let store_ref = store.lock().await;
                 let jid = store_ref.resolve_id(&id);
                 match jid {
-                    Some(jid) => (jid.clone(), store_ref.get(&jid).map_or(0, |job| job.last_diff_cursor)),
-                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                    Some(jid) => (
+                        jid.clone(),
+                        store_ref.get(&jid).map_or(0, |job| job.last_diff_cursor),
+                        store_ref.get(&jid).map_or(0, |job| job.last_diff_lines),
+                    ),
+                    None => {
+                        return serde_json::to_value(Response::<()>::err(
+                            req_id.clone(),
+                            "job not found",
+                        ))
+                        .unwrap_or_default();
+                    }
                 }
             };
-            let regex_ref = filter_regex.as_ref().and_then(|p| regex::Regex::new(p).ok());
-            match crate::log_manager::diff_since(&job_id, cursor, stream.as_deref(), None, regex_ref.as_ref()).await {
-                Ok((mut log_lines, new_cursor)) => {
+            let regex_ref = filter_regex
+                .as_ref()
+                .and_then(|p| regex::Regex::new(p).ok());
+            match crate::log_manager::diff_since(
+                &job_id,
+                cursor,
+                line_base,
+                stream.as_deref(),
+                None,
+                regex_ref.as_ref(),
+            )
+            .await
+            {
+                Ok((mut log_lines, new_cursor, new_total)) => {
                     // `new_cursor` is the byte-offset cursor returned by
                     // diff_since. We always store it verbatim, so the next
                     // diff resumes exactly where the log was read. The `--lines`
@@ -790,15 +878,17 @@ async fn dispatch(
                     // influence the cursor advance (mixing a byte offset with a
                     // line count permanently corrupts the cursor).
                     if let Some(max_lines) = lines
-                        && log_lines.len() > max_lines {
-                            log_lines = log_lines.split_off(log_lines.len() - max_lines);
-                        }
+                        && log_lines.len() > max_lines
+                    {
+                        log_lines = log_lines.split_off(log_lines.len() - max_lines);
+                    }
 
                     // Update cursor in store and persist
                     {
                         let mut store_ref = store.lock().await;
                         if let Some(job) = store_ref.get_mut(&job_id) {
                             job.last_diff_cursor = new_cursor;
+                            job.last_diff_lines = new_total;
                         }
                     }
                     // Persist updated status
@@ -821,7 +911,9 @@ async fn dispatch(
                     });
                     match serde_json::to_value(result) {
                         Ok(val) => Response::ok(req_id.clone(), val),
-                        Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+                        Err(e) => {
+                            Response::err(req_id.clone(), format!("serialization error: {e}"))
+                        }
                     }
                 }
                 Err(e) => Response::err(req_id.clone(), e.to_string()),
@@ -831,15 +923,13 @@ async fn dispatch(
             Ok(()) => Response::ok(req_id.clone(), serde_json::json!({ "ok": true })),
             Err(e) => Response::err(req_id.clone(), e.to_string()),
         },
-        Command::Stats { id } => {
-            match runner::get_stats(&id, store.clone()).await {
-                Ok(stats) => match serde_json::to_value(stats) {
-                    Ok(val) => Response::ok(req_id.clone(), val),
-                    Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
-                },
-                Err(e) => Response::err(req_id.clone(), e.to_string()),
-            }
-        }
+        Command::Stats { id } => match runner::get_stats(&id, store.clone()).await {
+            Ok(stats) => match serde_json::to_value(stats) {
+                Ok(val) => Response::ok(req_id.clone(), val),
+                Err(e) => Response::err(req_id.clone(), format!("serialization error: {e}")),
+            },
+            Err(e) => Response::err(req_id.clone(), e.to_string()),
+        },
         Command::Expect {
             id,
             pattern,
@@ -853,17 +943,19 @@ async fn dispatch(
             let job_id = {
                 let store_ref = store.lock().await;
                 let jid = store_ref.resolve_id(&id);
-                if let Some(jid) = jid { match store_ref.get(&jid) {
-                    Some(job) if job.is_alive() => jid,
-                    Some(_) => {
-                        let err = Response::<()>::err(req_id.clone(), "job is not alive");
-                        return serde_json::to_value(err).unwrap_or_default();
+                if let Some(jid) = jid {
+                    match store_ref.get(&jid) {
+                        Some(job) if job.is_alive() => jid,
+                        Some(_) => {
+                            let err = Response::<()>::err(req_id.clone(), "job is not alive");
+                            return serde_json::to_value(err).unwrap_or_default();
+                        }
+                        None => {
+                            let err = Response::<()>::err(req_id.clone(), "job not found");
+                            return serde_json::to_value(err).unwrap_or_default();
+                        }
                     }
-                    None => {
-                        let err = Response::<()>::err(req_id.clone(), "job not found");
-                        return serde_json::to_value(err).unwrap_or_default();
-                    }
-                } } else {
+                } else {
                     let err = Response::<()>::err(req_id.clone(), "job not found");
                     return serde_json::to_value(err).unwrap_or_default();
                 }
@@ -872,6 +964,21 @@ async fn dispatch(
             let log_path = crate::state::job_dir(&job_id).join("stdout.log");
             let mut cursor = get_file_size(&log_path).await;
             let mut line_offset = count_lines_up_to(&log_path, cursor).await;
+
+            // Compile the regex once up front: recompiling per line is
+            // wasteful, and an invalid pattern should fail fast.
+            let expect_re: Option<regex::Regex> = if is_regex {
+                match regex::Regex::new(&pattern) {
+                    Ok(re) => Some(re),
+                    Err(e) => {
+                        let err =
+                            Response::<()>::err(req_id.clone(), format!("invalid regex: {e}"));
+                        return serde_json::to_value(err).unwrap_or_default();
+                    }
+                }
+            } else {
+                None
+            };
 
             loop {
                 if start.elapsed() >= timeout {
@@ -889,7 +996,10 @@ async fn dispatch(
                     match store_ref.get(&job_id) {
                         Some(job) if job.is_alive() => {}
                         _ => {
-                            let err = Response::<()>::err(req_id.clone(), "job exited before pattern was matched");
+                            let err = Response::<()>::err(
+                                req_id.clone(),
+                                "job exited before pattern was matched",
+                            );
                             return serde_json::to_value(err).unwrap_or_default();
                         }
                     }
@@ -904,18 +1014,20 @@ async fn dispatch(
                     if let Some(content) = new_content {
                         let mut matched_line: Option<(u64, String)> = None;
 
-                        for (i, line) in content.lines().enumerate() {
-                            let found = if is_regex {
-                                regex::Regex::new(&pattern)
-                                    .ok()
-                                    .is_some_and(|re| re.is_match(line))
+                        // Logs are NDJSON envelopes: match against the decoded
+                        // `content` so metadata (`"stdout"`, timestamps) can't
+                        // false-positive and `^`/`$` anchors behave.
+                        for (i, raw) in content.lines().enumerate() {
+                            let (_, _, content) = crate::log_manager::parse_line(raw);
+                            let found = if let Some(ref re) = expect_re {
+                                re.is_match(&content)
                             } else {
-                                line.contains(&pattern)
+                                content.contains(&pattern)
                             };
 
                             if found {
                                 let line_number = line_offset + i as u64 + 1;
-                                matched_line = Some((line_number, line.to_string()));
+                                matched_line = Some((line_number, content));
                                 break;
                             }
                         }
@@ -962,7 +1074,13 @@ async fn dispatch(
                 let jid = store_ref.resolve_id(&id);
                 match jid {
                     Some(jid) => jid,
-                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                    None => {
+                        return serde_json::to_value(Response::<()>::err(
+                            req_id.clone(),
+                            "job not found",
+                        ))
+                        .unwrap_or_default();
+                    }
                 }
             };
             let mut masters = runner::PTY_PAIRS.lock().await;
@@ -1016,7 +1134,13 @@ async fn dispatch(
                 let jid = store_ref.resolve_id(&id);
                 match jid {
                     Some(jid) => jid,
-                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                    None => {
+                        return serde_json::to_value(Response::<()>::err(
+                            req_id.clone(),
+                            "job not found",
+                        ))
+                        .unwrap_or_default();
+                    }
                 }
             };
             let buffers = runner::SCREEN_BUFFERS.lock().await;
@@ -1053,13 +1177,22 @@ async fn dispatch(
             // spans rotated files, so it needs to know how many may exist).
             let (job_id, keep) = {
                 let store_ref = store.lock().await;
-                match store_ref.resolve_id(&id).and_then(|jid| store_ref.get(&jid)) {
+                match store_ref
+                    .resolve_id(&id)
+                    .and_then(|jid| store_ref.get(&jid))
+                {
                     Some(job) => (
                         job.id.clone(),
                         job.log_keep
                             .unwrap_or(crate::log_manager::RotationConfig::default().keep),
                     ),
-                    None => return serde_json::to_value(Response::<()>::err(req_id.clone(), "job not found")).unwrap_or_default(),
+                    None => {
+                        return serde_json::to_value(Response::<()>::err(
+                            req_id.clone(),
+                            "job not found",
+                        ))
+                        .unwrap_or_default();
+                    }
                 }
             };
             let regex = match filter_regex {
@@ -1070,7 +1203,7 @@ async fn dispatch(
                             req_id.clone(),
                             format!("invalid filter regex: {e}"),
                         ))
-                        .unwrap_or_default()
+                        .unwrap_or_default();
                     }
                 },
                 None => None,
@@ -1084,12 +1217,8 @@ async fn dispatch(
                 filter_regex: regex,
                 since_ms,
             };
-            match crate::log_manager::export_logs(
-                &crate::state::job_dir(&job_id),
-                keep,
-                &opts,
-            )
-            .await
+            match crate::log_manager::export_logs(&crate::state::job_dir(&job_id), keep, &opts)
+                .await
             {
                 Ok(written) => Response::ok(
                     req_id.clone(),
@@ -1140,9 +1269,7 @@ async fn count_newlines_before(path: &std::path::Path, offset: u64) -> u64 {
 }
 
 async fn get_file_size(path: &std::path::Path) -> u64 {
-    tokio::fs::metadata(path)
-        .await
-        .map_or(0, |m| m.len())
+    tokio::fs::metadata(path).await.map_or(0, |m| m.len())
 }
 
 /// Reads bytes from `start` to `end` in a file.
@@ -1186,7 +1313,12 @@ fn args_summary(cmd: &Command) -> String {
         | Command::Attach { id }
         | Command::StreamLogs { id, .. }
         | Command::Screen { id, .. } => format!("id={id}"),
-        Command::Tail(TailArgs { id, lines, filter_regex, .. }) => {
+        Command::Tail(TailArgs {
+            id,
+            lines,
+            filter_regex,
+            ..
+        }) => {
             let mut s = format!("id={id} lines={lines}");
             if filter_regex.is_some() {
                 s.push_str(" filter=regex");
@@ -1194,7 +1326,9 @@ fn args_summary(cmd: &Command) -> String {
             s
         }
         Command::List { workspace } => workspace.clone().unwrap_or_else(|| "*".into()),
-        Command::Diff { id, filter_regex, .. } => {
+        Command::Diff {
+            id, filter_regex, ..
+        } => {
             let mut s = format!("id={id}");
             if filter_regex.is_some() {
                 s.push_str(" filter=regex");
@@ -1216,11 +1350,7 @@ async fn count_lines_up_to(path: &std::path::Path, offset: u64) -> u64 {
     if offset == 0 {
         return 0;
     }
-    let Ok(mut file) = tokio::fs::OpenOptions::new()
-        .read(true)
-        .open(path)
-        .await
-    else {
+    let Ok(mut file) = tokio::fs::OpenOptions::new().read(true).open(path).await else {
         return 0;
     };
     if file.seek(std::io::SeekFrom::Start(0)).await.is_err() {
@@ -1228,7 +1358,9 @@ async fn count_lines_up_to(path: &std::path::Path, offset: u64) -> u64 {
     }
     let to_read = offset.min(10 * 1024 * 1024) as usize; // cap at 10MB
     let mut buf = vec![0u8; to_read];
-    let Ok(n) = file.read(&mut buf).await else { return 0 };
+    let Ok(n) = file.read(&mut buf).await else {
+        return 0;
+    };
     buf[..n].iter().filter(|&&b| b == b'\n').count() as u64
 }
 
@@ -1245,11 +1377,7 @@ mod tests {
                 id: "missing".into(),
             },
         };
-        let response = dispatch(
-            request,
-            Arc::new(Mutex::new(JobStore::new())),
-        )
-        .await;
+        let response = dispatch(request, Arc::new(Mutex::new(JobStore::new()))).await;
         assert_eq!(response["ok"], false);
     }
 }

@@ -23,6 +23,7 @@ complete -c bgrun -n "__fish_use_subcommand" -a "export" -d "Export log history 
 complete -c bgrun -n "__fish_use_subcommand" -a "schema" -d "Print JSON Schema for a command's arguments"
 complete -c bgrun -n "__fish_use_subcommand" -a "clean" -d "Remove all terminated jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "skill" -d "Manage embedded skills"
+complete -c bgrun -n "__fish_use_subcommand" -a "mcp" -d "Run a stdio MCP server for agent integrations"
 complete -c bgrun -n "__fish_use_subcommand" -a "help" -d "Print help"
 
 # Dynamic job IDs for commands that accept a job ID

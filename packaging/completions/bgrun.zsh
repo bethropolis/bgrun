@@ -26,6 +26,7 @@ _bgrun() {
         'schema:Print JSON Schema for a command'
         'clean:Remove all terminated jobs'
         'skill:Manage embedded skills'
+        'mcp:Run a stdio MCP server for agent integrations'
         'help:Print help'
     )
 

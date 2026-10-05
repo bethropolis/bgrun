@@ -68,7 +68,10 @@ pub async fn export(
             println!("{}", serde_json::to_string(&val)?);
         }
     } else if let Some(val) = response.data {
-        let count = val.get("lines").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let count = val
+            .get("lines")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
         let at = val
             .get("path")
             .and_then(serde_json::Value::as_str)

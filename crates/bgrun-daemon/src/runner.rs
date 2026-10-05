@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bgrun_core::{Job, JobStore};
 use bgrun_proto::{JobRecord, JobState, RestartPolicy, RunArgs};
-use nix::sys::signal::{killpg, Signal};
+use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use regex::Regex;
 use tokio::process::{Child, Command};
@@ -24,21 +24,18 @@ static SYSINFO_SYSTEM: LazyLock<Arc<std::sync::Mutex<sysinfo::System>>> =
     LazyLock::new(|| Arc::new(std::sync::Mutex::new(sysinfo::System::new())));
 
 /// Global map of job IDs to their stdin handles (piped mode).
-pub static STDIN_HANDLES: LazyLock<
-    Mutex<HashMap<String, tokio::process::ChildStdin>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+pub static STDIN_HANDLES: LazyLock<Mutex<HashMap<String, tokio::process::ChildStdin>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Global map of job IDs to their PTY master writers (for --pty mode).
 /// Wrapped in Arc<std::sync::Mutex> for thread-safe synchronous writes.
 type PtyWriter = Box<dyn std::io::Write + Send + 'static>;
-pub static PTY_WRITERS: LazyLock<
-    Mutex<HashMap<String, Arc<std::sync::Mutex<PtyWriter>>>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+pub static PTY_WRITERS: LazyLock<Mutex<HashMap<String, Arc<std::sync::Mutex<PtyWriter>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Global map of job IDs to their PTY master handles (for resize operations).
-pub static PTY_PAIRS: LazyLock<
-    Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+pub static PTY_PAIRS: LazyLock<Mutex<HashMap<String, Box<dyn portable_pty::MasterPty + Send>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Broadcast senders for raw PTY output to attached clients.
 pub static JOB_BROADCASTS: LazyLock<
@@ -56,15 +53,13 @@ pub use crate::state::LIFECYCLE_NOTIFY;
 
 /// Per-job mutex that serializes concurrent stdout/stderr writes to the
 /// shared log file. Prevents interleaved NDJSON entries.
-pub static LOG_WRITE_LOCKS: LazyLock<
-    Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+pub static LOG_WRITE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// In-memory ring buffers for recent PTY/piped output (used by `bgrun screen`).
 /// Each buffer stores up to 64KB of raw text output per job.
-pub static SCREEN_BUFFERS: LazyLock<
-    tokio::sync::Mutex<HashMap<String, VecDeque<u8>>>,
-> = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+pub static SCREEN_BUFFERS: LazyLock<tokio::sync::Mutex<HashMap<String, VecDeque<u8>>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 const SCREEN_BUFFER_MAX: usize = 64 * 1024;
 
@@ -83,10 +78,11 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     if let Some(ref name) = args.name {
         let store_ref = store.lock().await;
         if let Some(existing) = store_ref.find_by_name(name)
-            && existing.is_alive() {
-                info!(name = %name, id = %existing.id, "returning existing alive job");
-                return Ok(existing.to_record());
-            }
+            && existing.is_alive()
+        {
+            info!(name = %name, id = %existing.id, "returning existing alive job");
+            return Ok(existing.to_record());
+        }
     }
 
     // Dependency: wait for named job to reach Ready (with timeout)
@@ -104,7 +100,11 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
                     info!(dependency = %dep_name, "dependency ready");
                     break;
                 }
-                Some(job) if job.state == JobState::Exited || job.state == JobState::Crashed || job.state == JobState::Killed => {
+                Some(job)
+                    if job.state == JobState::Exited
+                        || job.state == JobState::Crashed
+                        || job.state == JobState::Killed =>
+                {
                     info!(dependency = %dep_name, state = ?job.state, "dependency finished without ready check");
                     break;
                 }
@@ -153,9 +153,9 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         let uid = nix::unistd::getuid();
         let gid = nix::unistd::getgid();
         unsafe {
-            child_cmd.as_std_mut().pre_exec(move || {
-                crate::sandbox::sandbox_pre_exec(uid, gid)
-            });
+            child_cmd
+                .as_std_mut()
+                .pre_exec(move || crate::sandbox::sandbox_pre_exec(uid, gid));
         }
     }
     #[cfg(not(target_os = "linux"))]
@@ -205,12 +205,13 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
             pids_max: args.pids_max,
         };
         if !limits.is_empty()
-            && let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
-                let _ = child.kill().await;
-                STDIN_HANDLES.lock().await.remove(&id);
-                let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
-                anyhow::bail!("{e:#}");
-            }
+            && let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits)
+        {
+            let _ = child.kill().await;
+            STDIN_HANDLES.lock().await.remove(&id);
+            let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+            anyhow::bail!("{e:#}");
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -222,10 +223,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     }
 
     // Per-job log rotation settings, shared by both capture tasks.
-    let rotation = crate::log_manager::RotationConfig::from_job(
-        args.log_max_size,
-        args.log_keep,
-    );
+    let rotation = crate::log_manager::RotationConfig::from_job(args.log_max_size, args.log_keep);
 
     // Spawn async task to capture stdout/stderr to log file with rotation
     let stdout_log = job_dir.join("stdout.log");
@@ -274,25 +272,27 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
         let mut store = store.lock().await;
         if let Some(ref name) = job_name
             && let Some(existing) = store.find_by_name(name)
-                && existing.is_alive() && existing.id != id {
-                    // Clone the existing record (and its id for logging) before
-                    // dropping the store lock, then terminate the process we
-                    // just spawned so it does not leak as an orphan (the old
-                    // code returned the existing job but never killed the fresh
-                    // child).
-                    let dup = existing.to_record();
-                    let existing_id = existing.id.clone();
-                    drop(store);
-                    info!(name = %name, id = %existing_id, "dual-spawn race: killing duplicate and returning existing");
-                    let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
-                    let _ = child.kill().await;
-                    let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
-                    // Drop global handles registered for the orphaned job.
-                    STDIN_HANDLES.lock().await.remove(&id);
-                    LOG_WRITE_LOCKS.lock().await.remove(&id);
-                    SCREEN_BUFFERS.lock().await.remove(&id);
-                    return Ok(dup);
-                }
+            && existing.is_alive()
+            && existing.id != id
+        {
+            // Clone the existing record (and its id for logging) before
+            // dropping the store lock, then terminate the process we
+            // just spawned so it does not leak as an orphan (the old
+            // code returned the existing job but never killed the fresh
+            // child).
+            let dup = existing.to_record();
+            let existing_id = existing.id.clone();
+            drop(store);
+            info!(name = %name, id = %existing_id, "dual-spawn race: killing duplicate and returning existing");
+            let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            let _ = child.kill().await;
+            let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+            // Drop global handles registered for the orphaned job.
+            STDIN_HANDLES.lock().await.remove(&id);
+            LOG_WRITE_LOCKS.lock().await.remove(&id);
+            SCREEN_BUFFERS.lock().await.remove(&id);
+            return Ok(dup);
+        }
         store.insert(job);
     }
 
@@ -322,7 +322,9 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
             // Check if job is still alive before killing
             let alive = {
                 let store_ref = store_clone.lock().await;
-                store_ref.get(&id_clone).is_some_and(bgrun_core::Job::is_alive)
+                store_ref
+                    .get(&id_clone)
+                    .is_some_and(bgrun_core::Job::is_alive)
             };
             if alive {
                 info!(id = %id_clone, "max runtime reached, killing job");
@@ -368,11 +370,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
 /// Handles a job's exit: performs post-exit readiness check, transitions
 /// state, cleans up handles, and persists status. Shared by piped and PTY
 /// monitor tasks.
-async fn handle_job_exit(
-    id: String,
-    store: Arc<Mutex<JobStore>>,
-    exit_code: Option<i32>,
-) {
+async fn handle_job_exit(id: String, store: Arc<Mutex<JobStore>>, exit_code: Option<i32>) {
     // Post-exit readiness check: if the job has a LogPattern readiness and
     // exited cleanly before the readiness loop fired, check the log and
     // transition through Ready first.
@@ -404,11 +402,12 @@ async fn handle_job_exit(
             if pattern_matched {
                 let mut store = store.lock().await;
                 if let Some(job) = store.get_mut(&id)
-                    && job.state == JobState::Running {
-                        let _ = job.transition(JobState::Ready);
-                        job.ready_at = Some(chrono::Utc::now());
-                        info!(id = %id, "post-exit readiness check: pattern matched, transitioning through Ready");
-                    }
+                    && job.state == JobState::Running
+                {
+                    let _ = job.transition(JobState::Ready);
+                    job.ready_at = Some(chrono::Utc::now());
+                    info!(id = %id, "post-exit readiness check: pattern matched, transitioning through Ready");
+                }
             }
         }
     }
@@ -475,11 +474,12 @@ async fn handle_job_exit(
 fn restart_trigger(policy: &RestartPolicy, state: &JobState, was_ready: bool) -> Option<u64> {
     match policy {
         RestartPolicy::Never => None,
-        RestartPolicy::OnCrash { backoff_ms } => (state == &JobState::Crashed).then_some(*backoff_ms),
-        RestartPolicy::OnFailure { backoff_ms } => {
-            (state == &JobState::Crashed || (state == &JobState::Exited && !was_ready))
-                .then_some(*backoff_ms)
+        RestartPolicy::OnCrash { backoff_ms } => {
+            (state == &JobState::Crashed).then_some(*backoff_ms)
         }
+        RestartPolicy::OnFailure { backoff_ms } => (state == &JobState::Crashed
+            || (state == &JobState::Exited && !was_ready))
+            .then_some(*backoff_ms),
         RestartPolicy::Always { backoff_ms } => {
             matches!(state, JobState::Crashed | JobState::Exited).then_some(*backoff_ms)
         }
@@ -524,8 +524,7 @@ async fn schedule_restart(id: String, store: Arc<Mutex<JobStore>>) {
     }
 
     let backoff_ms = backoff_ms.max(1_000); // floor at 1s
-    let running_10s =
-        (chrono::Utc::now() - job.started_at) > chrono::Duration::seconds(10);
+    let running_10s = (chrono::Utc::now() - job.started_at) > chrono::Duration::seconds(10);
 
     // Reset counter if the job ran for more than 10s
     if running_10s {
@@ -549,10 +548,13 @@ async fn schedule_restart(id: String, store: Arc<Mutex<JobStore>>) {
         let exponent = 1u64 << consecutive.min(8); // cap exponent at 256x
         let delay_ms = backoff_ms.saturating_mul(exponent).min(300_000); // cap at 5 min
         // Simple jitter: 0–1000ms based on nanosecond timestamp bits
-        let jitter_ms = u64::from(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() % 1000);
+        let jitter_ms = u64::from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos()
+                % 1000,
+        );
         let total_ms = delay_ms + jitter_ms;
 
         // Increment consecutive_failures
@@ -602,42 +604,51 @@ fn restart_job(
     store: Arc<Mutex<JobStore>>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
     Box::pin(async move {
-    let job = {
-        let store_ref = store.lock().await;
-        store_ref.get(&id).cloned()
-    };
-    let Some(job) = job else {
-        error!(id = %id, "restart: job not found");
-        return;
-    };
+        let job = {
+            let store_ref = store.lock().await;
+            store_ref.get(&id).cloned()
+        };
+        let Some(job) = job else {
+            error!(id = %id, "restart: job not found");
+            return;
+        };
 
-    // Don't re-spawn if the job was killed or manually put into a terminal state
-    if !matches!(job.state, JobState::Crashed | JobState::Exited) {
-        return;
-    }
+        // Don't re-spawn if the job was killed or manually put into a terminal state
+        if !matches!(job.state, JobState::Crashed | JobState::Exited) {
+            return;
+        }
 
-    // If a job with the same name is already alive, skip restart entirely.
-    // This prevents `bgrun kill <name>` from being defeated by a pending
-    // restart scheduled for an older UUID.
-    if let Some(ref name) = job.name {
-        let store_ref = store.lock().await;
-        if let Some(existing) = store_ref.find_by_name(name)
-            && existing.is_alive() {
+        // If a job with the same name is already alive, skip restart entirely.
+        // This prevents `bgrun kill <name>` from being defeated by a pending
+        // restart scheduled for an older UUID.
+        if let Some(ref name) = job.name {
+            let store_ref = store.lock().await;
+            if let Some(existing) = store_ref.find_by_name(name)
+                && existing.is_alive()
+            {
                 info!(name = %name, "restart skipped: job already alive");
                 return;
             }
-    }
+        }
 
-    let args = run_args_from_job(&job);
+        let args = run_args_from_job(&job);
 
-    info!(id = %id, "restarting crashed job");
-    // Carry the failure streak across the record swap: without this every
-    // generation starts at 0, so neither exponential backoff growth nor the
-    // max-retries gate would ever engage.
-    match swap_record(&id, args, job.restart_count, job.consecutive_failures, &store).await {
-        Ok(_) => info!(id = %id, "restart succeeded"),
-        Err(e) => error!(id = %id, error = %e, "restart failed"),
-    }
+        info!(id = %id, "restarting crashed job");
+        // Carry the failure streak across the record swap: without this every
+        // generation starts at 0, so neither exponential backoff growth nor the
+        // max-retries gate would ever engage.
+        match swap_record(
+            &id,
+            args,
+            job.restart_count,
+            job.consecutive_failures,
+            &store,
+        )
+        .await
+        {
+            Ok(_) => info!(id = %id, "restart succeeded"),
+            Err(e) => error!(id = %id, error = %e, "restart failed"),
+        }
     })
 }
 
@@ -690,9 +701,11 @@ async fn swap_record(
         let mut store = store.lock().await;
         if let Some(ref name) = args.name
             && let Some(existing) = store.find_by_name(name)
-                && existing.is_alive() && existing.id != old_id {
-                    anyhow::bail!("restart race: job {name} already alive with different UUID");
-                }
+            && existing.is_alive()
+            && existing.id != old_id
+        {
+            anyhow::bail!("restart race: job {name} already alive with different UUID");
+        }
         store.remove(old_id);
     }
     let _ = tokio::fs::remove_dir_all(state::job_dir(old_id)).await;
@@ -708,11 +721,12 @@ async fn swap_record(
         // raced duplicate keeps its own count.
         let mut store_ref = store.lock().await;
         if let Some(j) = store_ref.get_mut(&record.id)
-            && j.restart_count == 0 {
-                j.restart_count = prior_restarts + 1;
-                j.consecutive_failures = prior_failures;
-                let _ = state::write_status(j).await;
-            }
+            && j.restart_count == 0
+        {
+            j.restart_count = prior_restarts + 1;
+            j.consecutive_failures = prior_failures;
+            let _ = state::write_status(j).await;
+        }
     }
     Ok(record)
 }
@@ -733,11 +747,9 @@ async fn monitor_pty_job(
     store: Arc<Mutex<JobStore>>,
     mut child: Box<dyn portable_pty::Child + Send>,
 ) {
-    let exit_code = tokio::task::spawn_blocking(move || {
-        match child.wait() {
-            Ok(status) => Some(status.exit_code() as i32),
-            Err(_) => Some(-1),
-        }
+    let exit_code = tokio::task::spawn_blocking(move || match child.wait() {
+        Ok(status) => Some(status.exit_code() as i32),
+        Err(_) => Some(-1),
     })
     .await
     .unwrap_or(Some(-1));
@@ -757,7 +769,11 @@ async fn poll_log_for_pattern(log_path: &std::path::Path, pattern: &str, timeout
             return false;
         }
 
-        let Ok(mut file) = tokio::fs::OpenOptions::new().read(true).open(log_path).await else {
+        let Ok(mut file) = tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(log_path)
+            .await
+        else {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             continue;
         };
@@ -858,11 +874,12 @@ async fn spawn_pty_job(
             pids_max: args.pids_max,
         };
         if !limits.is_empty()
-            && let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits) {
-                let _ = child.kill();
-                let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
-                anyhow::bail!("{e:#}");
-            }
+            && let Err(e) = crate::cgroup::setup_job_group(&id, pid, &limits)
+        {
+            let _ = child.kill();
+            let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+            anyhow::bail!("{e:#}");
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -879,31 +896,20 @@ async fn spawn_pty_job(
         .context("failed to clone PTY reader")?;
 
     // Take the PTY master writer for stdin injection (can only be taken once)
-    let writer = master
-        .take_writer()
-        .context("failed to take PTY writer")?;
+    let writer = master.take_writer().context("failed to take PTY writer")?;
     PTY_WRITERS
         .lock()
         .await
         .insert(id.clone(), Arc::new(std::sync::Mutex::new(writer)));
 
     // Store the master handle for resize operations
-    PTY_PAIRS
-        .lock()
-        .await
-        .insert(id.clone(), master);
+    PTY_PAIRS.lock().await.insert(id.clone(), master);
 
     // Create broadcast channel for PTY output to attached clients
     let (tx, _rx) = tokio::sync::broadcast::channel(1024);
-    JOB_BROADCASTS
-        .lock()
-        .await
-        .insert(id.clone(), tx.clone());
+    JOB_BROADCASTS.lock().await.insert(id.clone(), tx.clone());
 
-    let rotation = crate::log_manager::RotationConfig::from_job(
-        args.log_max_size,
-        args.log_keep,
-    );
+    let rotation = crate::log_manager::RotationConfig::from_job(args.log_max_size, args.log_keep);
 
     // Spawn blocking task to capture PTY output (sync reads on PTY master)
     // Broadcast sender is passed through so raw bytes reach attached clients
@@ -943,22 +949,24 @@ async fn spawn_pty_job(
         let mut store = store.lock().await;
         if let Some(ref name) = job_name
             && let Some(existing) = store.find_by_name(name)
-                && existing.is_alive() && existing.id != id {
-                    // Clone the existing record (and its id for logging) before
-                    // dropping the store lock, then terminate the orphaned PTY
-                    // process and remove its handles so nothing leaks.
-                    let dup = existing.to_record();
-                    let existing_id = existing.id.clone();
-                    drop(store);
-                    info!(name = %name, id = %existing_id, "dual-spawn race (pty): killing duplicate and returning existing");
-                    let _ = child.kill();
-                    let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
-                    PTY_WRITERS.lock().await.remove(&id);
-                    PTY_PAIRS.lock().await.remove(&id);
-                    JOB_BROADCASTS.lock().await.remove(&id);
-                    SCREEN_BUFFERS.lock().await.remove(&id);
-                    return Ok(dup);
-                }
+            && existing.is_alive()
+            && existing.id != id
+        {
+            // Clone the existing record (and its id for logging) before
+            // dropping the store lock, then terminate the orphaned PTY
+            // process and remove its handles so nothing leaks.
+            let dup = existing.to_record();
+            let existing_id = existing.id.clone();
+            drop(store);
+            info!(name = %name, id = %existing_id, "dual-spawn race (pty): killing duplicate and returning existing");
+            let _ = child.kill();
+            let _ = tokio::fs::remove_dir_all(state::job_dir(&id)).await;
+            PTY_WRITERS.lock().await.remove(&id);
+            PTY_PAIRS.lock().await.remove(&id);
+            JOB_BROADCASTS.lock().await.remove(&id);
+            SCREEN_BUFFERS.lock().await.remove(&id);
+            return Ok(dup);
+        }
         store.insert(job);
     }
 
@@ -987,7 +995,9 @@ async fn spawn_pty_job(
             sleep(Duration::from_millis(max_ms)).await;
             let alive = {
                 let store_ref = store_clone.lock().await;
-                store_ref.get(&id_clone).is_some_and(bgrun_core::Job::is_alive)
+                store_ref
+                    .get(&id_clone)
+                    .is_some_and(bgrun_core::Job::is_alive)
             };
             if alive {
                 info!(id = %id_clone, "max runtime reached, killing job");
@@ -1137,10 +1147,9 @@ pub async fn stop_job(
         (job.pid, job.is_alive(), actual_id)
     };
 
-    if is_alive
-        && let Some(pid) = pid {
-            terminate_process_group(pid, Duration::from_millis(timeout_ms.max(100))).await;
-        }
+    if is_alive && let Some(pid) = pid {
+        terminate_process_group(pid, Duration::from_millis(timeout_ms.max(100))).await;
+    }
 
     let job = {
         let mut store = store.lock().await;
@@ -1197,8 +1206,7 @@ pub async fn restart_job_now(
 
     let args = run_args_from_job(&job);
     let restarts = job.restart_count;
-    let record =
-        swap_record(&job.id, args, restarts, 0, &store).await?;
+    let record = swap_record(&job.id, args, restarts, 0, &store).await?;
     info!(id = %job.id, new_id = %record.id, "job restarted");
     Ok(record)
 }
@@ -1248,11 +1256,7 @@ pub async fn kill_all_jobs(store: Arc<Mutex<JobStore>>) {
 ///
 /// Accepts either a job ID (UUID) or a named job name.
 /// Checks PTY writers first, then piped stdin handles.
-pub async fn send_stdin(
-    id_or_name: &str,
-    data: &str,
-    store: Arc<Mutex<JobStore>>,
-) -> Result<()> {
+pub async fn send_stdin(id_or_name: &str, data: &str, store: Arc<Mutex<JobStore>>) -> Result<()> {
     // Resolve ID or name to actual job ID
     let actual_id = resolve_job_id(id_or_name, store.clone()).await?;
 
@@ -1286,10 +1290,7 @@ pub async fn send_stdin(
 
 /// Resolves a job ID or name to the actual job ID. Checks by ID first, then
 /// by name lookup in the store.
-async fn resolve_job_id(
-    id_or_name: &str,
-    store: Arc<Mutex<JobStore>>,
-) -> Result<String> {
+async fn resolve_job_id(id_or_name: &str, store: Arc<Mutex<JobStore>>) -> Result<String> {
     // Check by ID in both handle maps
     {
         let piped = STDIN_HANDLES.lock().await;
@@ -1341,7 +1342,11 @@ pub async fn get_stats(
 
     let sysinfo_pid = sysinfo::Pid::from_u32(pid);
     let (cpu_pct, rss_mb, uptime_secs) = match sys.process(sysinfo_pid) {
-        Some(proc) => (proc.cpu_usage(), proc.memory() / (1024 * 1024), proc.run_time()),
+        Some(proc) => (
+            proc.cpu_usage(),
+            proc.memory() / (1024 * 1024),
+            proc.run_time(),
+        ),
         None => (0.0, 0, 0),
     };
 
@@ -1361,11 +1366,7 @@ fn get_process_rss_kb(pid: u32) -> Option<u64> {
 }
 
 /// Monitors a job's RSS every second and kills it if it exceeds `max_rss_mb`.
-async fn monitor_memory_limit(
-    id: String,
-    max_rss_mb: u64,
-    store: Arc<Mutex<JobStore>>,
-) {
+async fn monitor_memory_limit(id: String, max_rss_mb: u64, store: Arc<Mutex<JobStore>>) {
     loop {
         sleep(Duration::from_secs(1)).await;
 
@@ -1495,17 +1496,16 @@ async fn capture_output(
                 // Check for rotation (only once per chunk)
                 if let Ok(meta) = tokio::fs::metadata(&log_path).await
                     && meta.len() > rotation.max_bytes
-                        && let Ok(rotated) =
-                            crate::log_manager::rotate_if_needed(id, &rotation).await
-                        && rotated
-                        && let Ok(new_file) = tokio::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&log_path)
-                            .await
-                        {
-                            file = new_file;
-                        }
+                    && let Ok(rotated) = crate::log_manager::rotate_if_needed(id, &rotation).await
+                    && rotated
+                    && let Ok(new_file) = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                        .await
+                {
+                    file = new_file;
+                }
             }
             Err(_) => break,
         }
@@ -1516,23 +1516,18 @@ async fn capture_output(
 /// device attributes, DCS sequences) from log lines while leaving standard color
 /// codes intact.
 fn scrub_terminal_noise(input: &str) -> String {
-    static OSC_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new("\x1b\\][0-9]+;[^\x1b\x07]*(?:\x1b\\\\|\x07)").unwrap()
-    });
+    static OSC_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("\x1b\\][0-9]+;[^\x1b\x07]*(?:\x1b\\\\|\x07)").unwrap());
 
-    static DCS_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new("\x1bP[^\x1b]*\x1b\\\\").unwrap()
-    });
+    static DCS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new("\x1bP[^\x1b]*\x1b\\\\").unwrap());
 
-    static CSI_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new("\x1b\\[[\x3f\x3e]?[0-9;]*[Rcqu]").unwrap()
-    });
+    static CSI_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("\x1b\\[[\x3f\x3e]?[0-9;]*[Rcqu]").unwrap());
 
     // Cursor movement and erase sequences used by progress bars and shell
     // rendering — always noise in log output.
-    static CURSOR_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new("\x1b\\[[?]?[0-9;]*[FEGKJ]|\x1b\\[[?]25[hl]").unwrap()
-    });
+    static CURSOR_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("\x1b\\[[?]?[0-9;]*[FEGKJ]|\x1b\\[[?]25[hl]").unwrap());
 
     let s = OSC_RE.replace_all(input, "");
     let s = DCS_RE.replace_all(&s, "");
@@ -1542,12 +1537,7 @@ fn scrub_terminal_noise(input: &str) -> String {
 
 /// Writes a single line to the log file as a structured NDJSON entry.
 /// Serializes per-job to prevent interleaved stdout/stderr lines.
-async fn write_ts_line(
-    file: &mut tokio::fs::File,
-    line: &[u8],
-    id: &str,
-    label: &str,
-) {
+async fn write_ts_line(file: &mut tokio::fs::File, line: &[u8], id: &str, label: &str) {
     use tokio::io::AsyncWriteExt;
 
     let content = String::from_utf8_lossy(line)
@@ -1556,7 +1546,9 @@ async fn write_ts_line(
     let cleaned = scrub_terminal_noise(&content);
     let content_for_broadcast = cleaned.clone();
     let entry = crate::log_manager::DiskLogEntry {
-        t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        t: chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
         s: label.to_string(),
         c: cleaned,
     };
@@ -1612,7 +1604,9 @@ fn write_ts_line_sync(file: &mut std::fs::File, line: &[u8], id: &str) {
     let cleaned = scrub_terminal_noise(&content);
     let content_for_broadcast = cleaned.clone();
     let entry = crate::log_manager::DiskLogEntry {
-        t: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        t: chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
         s: "pty".to_string(),
         c: cleaned,
     };
@@ -1714,17 +1708,16 @@ fn capture_pty_output(
                 }
                 // Check for rotation (only once per chunk)
                 if let Ok(meta) = std::fs::metadata(log_path)
-                    && meta.len() > rotation.max_bytes {
-                        let dir = log_path.parent();
-                        let rotated = dir.is_some_and(|d| {
-                            crate::log_manager::rotate_files_blocking(d, &rotation)
-                                .unwrap_or(false)
-                        });
-                        if rotated
-                            && let Ok(new_file) = reopen(log_path) {
-                                file = new_file;
-                            }
+                    && meta.len() > rotation.max_bytes
+                {
+                    let dir = log_path.parent();
+                    let rotated = dir.is_some_and(|d| {
+                        crate::log_manager::rotate_files_blocking(d, &rotation).unwrap_or(false)
+                    });
+                    if rotated && let Ok(new_file) = reopen(log_path) {
+                        file = new_file;
                     }
+                }
             }
             Err(e) => {
                 error!(id = %id, "error reading PTY output: {}", e);
@@ -1772,7 +1765,10 @@ mod tests {
         );
 
         // Standard color codes should NOT be stripped
-        assert_eq!(scrub_terminal_noise("\x1b[31mhello\x1b[0m"), "\x1b[31mhello\x1b[0m");
+        assert_eq!(
+            scrub_terminal_noise("\x1b[31mhello\x1b[0m"),
+            "\x1b[31mhello\x1b[0m"
+        );
         // Mixed: readable text with embedded noise
         assert_eq!(
             scrub_terminal_noise("hello \x1b[35;10R world \x1b[?0u!"),
@@ -1785,12 +1781,9 @@ mod tests {
         let dir = std::env::temp_dir().join("bgrun-test-check-pattern");
         let _ = tokio::fs::create_dir_all(&dir).await;
         let log_path = dir.join("stdout.log");
-        tokio::fs::write(
-            &log_path,
-            "[2026-06-01T10:00:00.000Z] listening on :8080\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(&log_path, "[2026-06-01T10:00:00.000Z] listening on :8080\n")
+            .await
+            .unwrap();
 
         assert!(poll_log_for_pattern(&log_path, "listening on", 100).await);
         assert!(!poll_log_for_pattern(&log_path, "nonexistent", 100).await);
@@ -1806,12 +1799,19 @@ mod tests {
         let killed = JobState::Killed;
 
         // Never: nothing restarts.
-        assert_eq!(restart_trigger(&RestartPolicy::Never, &crashed, false), None);
+        assert_eq!(
+            restart_trigger(&RestartPolicy::Never, &crashed, false),
+            None
+        );
         assert_eq!(restart_trigger(&RestartPolicy::Never, &exited, true), None);
 
         // OnCrash: only abnormal death.
         assert_eq!(
-            restart_trigger(&RestartPolicy::OnCrash { backoff_ms: 1000 }, &crashed, false),
+            restart_trigger(
+                &RestartPolicy::OnCrash { backoff_ms: 1000 },
+                &crashed,
+                false
+            ),
             Some(1000)
         );
         assert_eq!(
@@ -1825,15 +1825,27 @@ mod tests {
 
         // OnFailure: crash, plus clean exits that never became ready.
         assert_eq!(
-            restart_trigger(&RestartPolicy::OnFailure { backoff_ms: 2000 }, &crashed, true),
+            restart_trigger(
+                &RestartPolicy::OnFailure { backoff_ms: 2000 },
+                &crashed,
+                true
+            ),
             Some(2000)
         );
         assert_eq!(
-            restart_trigger(&RestartPolicy::OnFailure { backoff_ms: 2000 }, &exited, false),
+            restart_trigger(
+                &RestartPolicy::OnFailure { backoff_ms: 2000 },
+                &exited,
+                false
+            ),
             Some(2000)
         );
         assert_eq!(
-            restart_trigger(&RestartPolicy::OnFailure { backoff_ms: 2000 }, &exited, true),
+            restart_trigger(
+                &RestartPolicy::OnFailure { backoff_ms: 2000 },
+                &exited,
+                true
+            ),
             None
         );
 

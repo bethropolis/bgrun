@@ -54,7 +54,11 @@ pub fn print_job(record: &JobRecord, mode: OutputMode) -> Result<()> {
         OutputMode::Human => {
             let b = |s: &str| maybe_bold(s);
             println!("{}:       {}", b("ID"), record.id);
-            println!("{}:     {}", b("Name"), record.name.as_deref().unwrap_or("-"));
+            println!(
+                "{}:     {}",
+                b("Name"),
+                record.name.as_deref().unwrap_or("-")
+            );
             println!("{}:  {}", b("Command"), record.cmd.join(" "));
             println!(
                 "{}:      {}",
@@ -63,15 +67,21 @@ pub fn print_job(record: &JobRecord, mode: OutputMode) -> Result<()> {
             );
             println!("{}:    {}", b("State"), maybe_color_state(&record.state));
             println!("{}:  {}", b("Started"), record.started_at);
-            println!("{}: {}", b("Workspace"), record.workspace.as_deref().unwrap_or("-"));
+            println!(
+                "{}: {}",
+                b("Workspace"),
+                record.workspace.as_deref().unwrap_or("-")
+            );
             if let Some(port) = record.allocated_port {
                 println!("{}:      {}", b("Port"), port);
             }
             if record.health_check.is_some() {
-                println!("{}:    enabled (interval={}s, threshold={})",
+                println!(
+                    "{}:    enabled (interval={}s, threshold={})",
                     b("Health"),
                     record.health_interval_secs.unwrap_or(10),
-                    record.health_threshold.unwrap_or(3));
+                    record.health_threshold.unwrap_or(3)
+                );
             }
         }
         OutputMode::Json => {
@@ -91,15 +101,13 @@ pub fn print_jobs(records: &[JobRecord], mode: OutputMode) -> Result<()> {
             }
             let color = use_color();
             if color {
-                println!(
-                    "{} {:<22} {} {:<12} {} {:<8} {} {:<5} {} {:<8} {}",
-                    "ID".bold(), "",
-                    "NAME".bold(), "",
-                    "STATE".bold(), "",
-                    "PID".bold(), "",
-                    "PORT".bold(), "",
-                    "COMMAND".bold(),
+                // Pad on plain text first, then style the whole line: styling
+                // individual cells injects ANSI escapes that break {:<w>} widths.
+                let header = format!(
+                    "  {:<22} {:<12} {:<8} {:<5} {:<8} COMMAND",
+                    "ID", "NAME", "STATE", "PID", "PORT"
                 );
+                println!("{}", header.bold());
                 let rule: String = std::iter::repeat_n('\u{2500}', 90).collect();
                 println!("{}", rule.dim());
             } else {
@@ -151,7 +159,11 @@ pub fn print_status(status: &JobStatus, mode: OutputMode) -> Result<()> {
                 b("Exit Code"),
                 status.exit_code.map_or("-".into(), |c| c.to_string())
             );
-            println!("{}:   {}", b("Ready At"), status.ready_at.as_deref().unwrap_or("-"));
+            println!(
+                "{}:   {}",
+                b("Ready At"),
+                status.ready_at.as_deref().unwrap_or("-")
+            );
             println!("{}:   {}", b("Restarts"), status.restart_count);
         }
         OutputMode::Json => {

@@ -7,7 +7,13 @@ use crate::duration::BgrunDuration;
 use crate::output::output_mode;
 
 /// Waits for a pattern in a job's log output.
-pub async fn expect(id: String, pattern: String, is_regex: bool, timeout: String, json: bool) -> Result<()> {
+pub async fn expect(
+    id: String,
+    pattern: String,
+    is_regex: bool,
+    timeout: String,
+    json: bool,
+) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -62,5 +68,3 @@ pub async fn expect(id: String, pattern: String, is_regex: bool, timeout: String
 
     Ok(())
 }
-
-
