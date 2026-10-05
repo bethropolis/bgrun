@@ -143,7 +143,7 @@ async fn call_tool(id: Value, params: Option<Value>) -> JsonRpcResponse {
         Err(message) => return JsonRpcResponse::err(Some(id), -32602, message),
     };
 
-    let result = execute(command).await;
+    let result = execute(name, command, &arguments).await;
     JsonRpcResponse::ok(
         Some(id),
         serde_json::to_value(&result).unwrap_or_else(|_| {
@@ -152,8 +152,23 @@ async fn call_tool(id: Value, params: Option<Value>) -> JsonRpcResponse {
     )
 }
 
-/// Executes one daemon command on a fresh connection (stateless per call).
-async fn execute(command: Command) -> CallToolResult {
+/// Token budget for a single tool's rendered output. Payloads that exceed it
+/// are cut with an explicit `[truncated ...]` marker telling the caller how
+/// to re-query narrower, so output is never silently incomplete.
+const MAX_TOOL_TEXT_BYTES: usize = 65_536;
+
+/// Upper bound on lines returned per log-reading call. Unbounded `lines`
+/// values can flood the caller's context window in one shot.
+const MAX_TOOL_LINES: usize = 1000;
+
+/// Executes one daemon command on a fresh connection (stateless per call),
+/// then shapes the result for token efficiency: compact JSON, a trimmed
+/// `list` view unless `verbose` was requested, and a byte ceiling with an
+/// explicit truncation marker.
+///
+/// `tool_name` and `arguments` are the original MCP call, used only for
+/// output shaping (`list` verbosity) and follow-up behavior (`run` + `wait`).
+async fn execute(tool_name: &str, command: Command, arguments: &Value) -> CallToolResult {
     let socket_path = bgrun_proto::paths::socket_path();
     if let Err(error) = ensure_daemon_running(&socket_path).await {
         return CallToolResult::error(format!("daemon unavailable: {error:#}"));
@@ -166,24 +181,237 @@ async fn execute(command: Command) -> CallToolResult {
         }
     };
 
+    let query_id = command_job_id(&command);
     let response = match client.send::<Value>(command).await {
         Ok(response) => response,
         Err(error) => return CallToolResult::error(format!("daemon request failed: {error:#}")),
     };
 
     if !response.ok {
+        let message = response
+            .error
+            .unwrap_or_else(|| "unknown daemon error".to_string());
         return CallToolResult::error(
-            response
-                .error
-                .unwrap_or_else(|| "unknown daemon error".to_string()),
+            suggest_similar_jobs(&message, query_id.as_deref(), &mut client).await,
         );
     }
 
-    let text = match &response.data {
-        Some(data) => serde_json::to_string_pretty(data).unwrap_or_else(|_| "ok".to_string()),
-        None => "ok".to_string(),
+    let mut data = response.data.unwrap_or(Value::Null);
+
+    // `run` with `wait: true` folds the usual run-then-wait round trip into
+    // one call. The wait only starts after a successful spawn.
+    if tool_name == "run" && get_bool(arguments, "wait", false) {
+        match data.get("id").and_then(Value::as_str).map(str::to_owned) {
+            Some(job_id) => {
+                let timeout_ms = get_u64(arguments, "wait_timeout_ms", 60_000).unwrap_or(60_000);
+                match execute_value(
+                    &mut client,
+                    Command::Wait {
+                        id: job_id.clone(),
+                        timeout_ms,
+                    },
+                )
+                .await
+                {
+                    Ok(waited) => {
+                        data = json!({ "run": data, "wait": waited });
+                    }
+                    Err(error) => {
+                        return CallToolResult::error(format!(
+                            "started job {job_id}, but waiting failed: {error}"
+                        ));
+                    }
+                }
+            }
+            None => {
+                return CallToolResult::error(
+                    "started job, but the daemon returned no job id to wait on",
+                );
+            }
+        }
+    }
+
+    if tool_name == "list" && !get_bool(arguments, "verbose", false) {
+        data = trim_job_list(&data);
+    }
+
+    let text = serde_json::to_string(&data).unwrap_or_else(|_| "ok".to_string());
+    CallToolResult::success(apply_text_ceiling(tool_name, text))
+}
+
+/// Sends one command over an established connection, returning the payload.
+/// Errors are plain strings so follow-up calls (e.g. `run` + `wait`) can
+/// compose them into a single tool result.
+async fn execute_value(
+    client: &mut DaemonClient,
+    command: Command,
+) -> std::result::Result<Value, String> {
+    let response = client
+        .send::<Value>(command)
+        .await
+        .map_err(|error| format!("daemon request failed: {error:#}"))?;
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "unknown daemon error".into()));
+    }
+    Ok(response.data.unwrap_or(Value::Null))
+}
+
+/// Returns the job id a command targets, when it targets exactly one job.
+/// Used to suggest near-matches when the daemon reports "job not found".
+fn command_job_id(command: &Command) -> Option<String> {
+    let id = match command {
+        Command::Status { id }
+        | Command::Stop { id, .. }
+        | Command::Restart { id, .. }
+        | Command::Tail(TailArgs { id, .. })
+        | Command::Diff { id, .. }
+        | Command::Wait { id, .. }
+        | Command::Send { id, .. }
+        | Command::Stats { id }
+        | Command::Expect { id, .. }
+        | Command::Screen { id, .. } => id,
+        Command::Kill(args) => return args.id.clone(),
+        _ => return None,
     };
-    CallToolResult::success(text)
+    Some(id.clone())
+}
+
+/// Enriches "job not found" errors with up to three near-matching names or
+/// id prefixes, so the caller can self-correct without a separate `list`
+/// round trip. Any other error passes through untouched, and a failed
+/// lookup never masks the original error.
+async fn suggest_similar_jobs(
+    message: &str,
+    query_id: Option<&str>,
+    client: &mut DaemonClient,
+) -> String {
+    let Some(query) = query_id.filter(|q| !q.is_empty()) else {
+        return message.to_string();
+    };
+    if !message.contains("job not found") {
+        return message.to_string();
+    }
+    let Ok(jobs) = execute_value(client, Command::List { workspace: None }).await else {
+        return message.to_string();
+    };
+    let suggestions = similar_job_names(query, &jobs);
+    if suggestions.is_empty() {
+        message.to_string()
+    } else {
+        format!("{message}; did you mean: {}", suggestions.join(", "))
+    }
+}
+
+/// Picks up to three job handles resembling `query`: exact-name containment
+/// first, then id prefixes, then fuzzy name matches.
+fn similar_job_names(query: &str, jobs: &Value) -> Vec<String> {
+    let Some(jobs) = jobs.as_array() else {
+        return Vec::new();
+    };
+    let query_lower = query.to_lowercase();
+    let mut exact = Vec::new();
+    let mut prefix = Vec::new();
+    let mut fuzzy = Vec::new();
+    for job in jobs {
+        let name = job.get("name").and_then(Value::as_str).unwrap_or("");
+        let id = job.get("id").and_then(Value::as_str).unwrap_or("");
+        let handle = if name.is_empty() {
+            format!("id {}", &id[..id.len().min(8)])
+        } else {
+            name.to_string()
+        };
+        if name.to_lowercase().contains(&query_lower) {
+            exact.push(handle);
+        } else if id.starts_with(query) {
+            prefix.push(handle);
+        } else if !name.is_empty() && query_lower.chars().all(|c| name.to_lowercase().contains(c)) {
+            fuzzy.push(handle);
+        }
+    }
+    exact
+        .into_iter()
+        .chain(prefix)
+        .chain(fuzzy)
+        .take(3)
+        .collect()
+}
+
+/// Trims a `list` payload to the fields an agent usually needs: id, name,
+/// state, pid, a shortened command, workspace. Drops `env`, `cwd`, and the
+/// policy/config block. Full records are one `verbose: true` call away, and
+/// ids are kept whole so they stay usable as handles in later calls.
+fn trim_job_list(data: &Value) -> Value {
+    let Some(jobs) = data.as_array() else {
+        return data.clone();
+    };
+    Value::Array(
+        jobs.iter()
+            .map(|job| {
+                json!({
+                    "id": job.get("id"),
+                    "name": job.get("name"),
+                    "state": job.get("state"),
+                    "pid": job.get("pid"),
+                    "cmd": summarize_cmd(job.get("cmd")),
+                    "workspace": job.get("workspace"),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Shortens a job's command vector to its first three words, with an
+/// ellipsis marker when longer. Non-string commands pass through untouched.
+fn summarize_cmd(cmd: Option<&Value>) -> Value {
+    let Some(items) = cmd.and_then(Value::as_array) else {
+        return cmd.cloned().unwrap_or(Value::Null);
+    };
+    let words: Vec<&str> = items
+        .iter()
+        .flat_map(|item| match item {
+            Value::String(s) => s.split_whitespace().collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    if words.len() > 3 {
+        Value::String(format!("{} …", words[..3].join(" ")))
+    } else {
+        Value::String(words.join(" "))
+    }
+}
+
+/// Enforces the per-tool output ceiling. Oversized text is cut at a UTF-8
+/// boundary with a marker explaining how to re-query narrower, so the caller
+/// knows the output is partial and what to do about it.
+fn apply_text_ceiling(tool_name: &str, mut text: String) -> String {
+    if text.len() <= MAX_TOOL_TEXT_BYTES {
+        return text;
+    }
+    let mut end = MAX_TOOL_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    let hint = match tool_name {
+        "tail" | "diff" | "screen" => {
+            "re-run with fewer `lines` or a filter (`level`, `stream`, `filter_regex`)"
+        }
+        "list" => "re-run with `verbose: false` (default) or a `workspace` filter",
+        _ => "re-run with narrower arguments",
+    };
+    use std::fmt::Write;
+    let _ = write!(
+        text,
+        "\n[truncated: response exceeded {MAX_TOOL_TEXT_BYTES} bytes; {hint}]"
+    );
+    text
+}
+
+/// Caps a caller-supplied line count at the per-tool maximum.
+fn cap_lines(lines: usize) -> usize {
+    lines.min(MAX_TOOL_LINES)
 }
 
 // ---------------------------------------------------------------------------
@@ -199,24 +427,21 @@ pub fn tool_registry() -> Vec<McpTool> {
     vec![
         tool(
             "run",
-            "Start a background job and return its record (id, name, pid, state). \
-             `cmd` is the command vector; single-word `cmd` values are also resolved \
-             against bgrun.toml jobs. Optional: `name` (stable handle), `workspace`, \
-             `readiness` ({\"log_pattern\": \"...\"} | {\"log_pattern_regex\": \"...\"} | \
-             {\"http_poll\": \"url\"} | {\"tcp_port\": 8080} | {\"file_exists\": \"path\"}), \
-             `restart` (Never | OnCrash/OnFailure/Always with backoff_ms), resource caps \
-             (`memory_max` bytes, `cpu_quota` %, `pids_max`), `env` map, `cwd`, `pty`, \
-             `sandbox`, `allocate_port` (env var name), health-check fields.",
-            serde_json::to_value(schemars::schema_for!(RunArgs))
-                .unwrap_or_else(|_| json!({ "type": "object" })),
+            "Start a background job and return its record. `cmd` is the command \
+             vector (see schema for the optional fields). Set `wait: true` to \
+             block until the job is ready in the same call instead of calling \
+             `wait` separately.",
+            run_schema(),
         ),
         tool(
             "list",
-            "List all jobs with id, name, workspace, state, pid, port, and command.",
+            "List jobs (id, name, state, pid, command). Pass `verbose: true` \
+             for the full record including `env` and `cwd`.",
             json!({
                 "type": "object",
                 "properties": {
-                    "workspace": { "type": "string", "description": "Only list jobs in this workspace." }
+                    "workspace": { "type": "string", "description": "Only list jobs in this workspace." },
+                    "verbose": { "type": "boolean", "description": "Return full job records (default false)." }
                 }
             }),
         ),
@@ -228,7 +453,9 @@ pub fn tool_registry() -> Vec<McpTool> {
         ),
         tool(
             "kill",
-            "Kill a job (SIGKILL), or all jobs in a workspace with `workspace` instead of `id`.",
+            "Terminate a job: SIGTERM first, escalating to SIGKILL after 5s. \
+             Fails on already-finished jobs (use `stop` to mark those). \
+             Or kill every job in a workspace with `workspace` instead of `id`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -266,10 +493,11 @@ pub fn tool_registry() -> Vec<McpTool> {
         ),
         tool(
             "tail",
-            "Read the last `lines` (default 50) lines of a job's log, optionally filtered \
-             by `level` substring (e.g. \"error\"), `stream` (stdout/stderr/pty) or \
-             `filter_regex`. With `digest: true`, returns a summary instead \
-             (total lines, error/warning counts, last error).",
+            "Read the last `lines` (default 50, capped at 1000) of a job's log, \
+             optionally filtered by `level` substring (e.g. \"error\"), `stream` \
+             (stdout/stderr/pty) or `filter_regex`. With `digest: true` and no \
+             `lines`, returns only the summary (total lines, error/warning \
+             counts, last error).",
             json!({
                 "type": "object",
                 "properties": {
@@ -408,6 +636,39 @@ fn tool(name: &str, description: &str, input_schema: Value) -> McpTool {
     }
 }
 
+/// The `run` tool's input schema: the `RunArgs` schema plus the MCP-only
+/// `wait` flags. `RunArgs` deserialization ignores the extra properties, so
+/// they are read separately in `execute()` after a successful spawn.
+fn run_schema() -> Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(RunArgs))
+        .unwrap_or_else(|_| json!({ "type": "object" }));
+    // Drop schema metadata that guides nothing: the `$schema` URI and type
+    // names. Property and definition `description`s stay — they document
+    // restart policies and readiness shapes the caller must get right.
+    if let Some(root) = schema.as_object_mut() {
+        root.remove("$schema");
+        root.remove("title");
+        if let Some(definitions) = root.get_mut("definitions").and_then(Value::as_object_mut) {
+            for definition in definitions.values_mut() {
+                if let Some(definition) = definition.as_object_mut() {
+                    definition.remove("title");
+                }
+            }
+        }
+    }
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "wait".to_string(),
+            json!({ "type": "boolean", "description": "Wait until the job is ready before returning (default false)." }),
+        );
+        properties.insert(
+            "wait_timeout_ms".to_string(),
+            json!({ "type": "integer", "description": "Maximum wait after starting (default 60000)." }),
+        );
+    }
+    schema
+}
+
 // ---------------------------------------------------------------------------
 // Tool → Command mapping
 // ---------------------------------------------------------------------------
@@ -440,20 +701,30 @@ fn build_command(name: &str, arguments: &Value) -> std::result::Result<Command, 
             id: require_str(arguments, "id")?,
             timeout_ms: get_u64(arguments, "timeout_ms", 10_000)?,
         }),
-        "tail" => Ok(Command::Tail(TailArgs {
-            id: require_str(arguments, "id")?,
-            lines: get_usize(arguments, "lines", 50)?,
-            digest: get_bool(arguments, "digest", false),
-            level: get_str(arguments, "level"),
-            strip_ansi: get_bool(arguments, "strip_ansi", false),
-            stream: get_str(arguments, "stream"),
-            cursor: None,
-            follow: false,
-            filter_regex: get_str(arguments, "filter_regex"),
-        })),
+        "tail" => {
+            let digest = get_bool(arguments, "digest", false);
+            // A digest without an explicit `lines` returns only the summary.
+            // Defaulting to 50 here as well would attach every log line to a
+            // call that asked for a summary.
+            let lines = match arguments.get("lines").filter(|value| !value.is_null()) {
+                None if digest => 0,
+                _ => cap_lines(get_usize(arguments, "lines", 50)?),
+            };
+            Ok(Command::Tail(TailArgs {
+                id: require_str(arguments, "id")?,
+                lines,
+                digest,
+                level: get_str(arguments, "level"),
+                strip_ansi: get_bool(arguments, "strip_ansi", false),
+                stream: get_str(arguments, "stream"),
+                cursor: None,
+                follow: false,
+                filter_regex: get_str(arguments, "filter_regex"),
+            }))
+        }
         "diff" => Ok(Command::Diff {
             id: require_str(arguments, "id")?,
-            lines: get_usize_opt(arguments, "lines")?,
+            lines: get_usize_opt(arguments, "lines")?.map(cap_lines),
             strip_ansi: get_bool(arguments, "strip_ansi", false),
             stream: get_str(arguments, "stream"),
             filter_regex: get_str(arguments, "filter_regex"),
@@ -483,7 +754,7 @@ fn build_command(name: &str, arguments: &Value) -> std::result::Result<Command, 
         }),
         "screen" => Ok(Command::Screen {
             id: require_str(arguments, "id")?,
-            lines: get_usize(arguments, "lines", 20)?,
+            lines: cap_lines(get_usize(arguments, "lines", 20)?),
         }),
         "clean" => Ok(Command::Clean {
             workspace: get_str(arguments, "workspace"),
@@ -646,6 +917,157 @@ mod tests {
                 stream: None,
                 filter_regex: None,
             }
+        );
+    }
+
+    #[test]
+    fn tail_digest_without_lines_requests_summary_only() {
+        // `digest: true` alone must not fetch log lines: the daemon returns
+        // both whenever `lines > 0`, which made the "token-saving" digest
+        // the most expensive call in the registry.
+        let command = build_command("tail", &json!({ "id": "web", "digest": true })).unwrap();
+        assert_eq!(
+            command,
+            Command::Tail(TailArgs {
+                id: "web".into(),
+                lines: 0,
+                digest: true,
+                level: None,
+                strip_ansi: false,
+                stream: None,
+                cursor: None,
+                follow: false,
+                filter_regex: None,
+            })
+        );
+
+        // An explicit `lines` still returns both, as documented.
+        let command =
+            build_command("tail", &json!({ "id": "web", "digest": true, "lines": 5 })).unwrap();
+        assert!(matches!(command, Command::Tail(TailArgs { lines: 5, .. })));
+    }
+
+    #[test]
+    fn log_reading_lines_are_capped() {
+        let command = build_command("tail", &json!({ "id": "x", "lines": 10_000 })).unwrap();
+        assert!(matches!(
+            command,
+            Command::Tail(TailArgs { lines: 1000, .. })
+        ));
+
+        let command = build_command("diff", &json!({ "id": "x", "lines": 10_000 })).unwrap();
+        assert!(matches!(
+            command,
+            Command::Diff {
+                lines: Some(1000),
+                ..
+            }
+        ));
+
+        let command = build_command("screen", &json!({ "id": "x", "lines": 10_000 })).unwrap();
+        assert!(matches!(command, Command::Screen { lines: 1000, .. }));
+
+        // Small values pass through untouched.
+        let command = build_command("tail", &json!({ "id": "x", "lines": 5 })).unwrap();
+        assert!(matches!(command, Command::Tail(TailArgs { lines: 5, .. })));
+    }
+
+    #[test]
+    fn run_schema_accepts_wait_flags() {
+        // The MCP-only flags must survive schema generation and be ignored
+        // by `RunArgs` deserialization (read separately after a spawn).
+        let schema = run_schema();
+        assert!(schema["properties"].get("wait").is_some());
+        assert!(schema["properties"].get("wait_timeout_ms").is_some());
+
+        let command = build_command(
+            "run",
+            &json!({ "cmd": ["sleep", "30"], "wait": true, "wait_timeout_ms": 5000 }),
+        )
+        .unwrap();
+        assert!(matches!(command, Command::Run(_)));
+        // Same payload without the flags maps identically.
+        let plain = build_command("run", &json!({ "cmd": ["sleep", "30"] })).unwrap();
+        assert_eq!(command, plain);
+    }
+
+    #[test]
+    fn list_trimming_drops_env_and_cwd_but_keeps_ids() {
+        let jobs = json!([
+            {
+                "id": "abcdef01-2345-6789-abcd-ef0123456789",
+                "name": "web",
+                "state": "running",
+                "pid": 123,
+                "cmd": ["sh", "-c", "npm run dev --port 3000"],
+                "cwd": "/home/user/project",
+                "env": { "TERM": "xterm", "LANG": "en_US.UTF-8" },
+                "workspace": null,
+                "started_at": "2026-10-05T00:00:00Z"
+            },
+            { "id": "other", "name": null, "state": "exited", "cmd": ["true"] }
+        ]);
+
+        let trimmed = trim_job_list(&jobs);
+        // Full ids survive: they are the handles for later calls.
+        assert_eq!(trimmed[0]["id"], "abcdef01-2345-6789-abcd-ef0123456789");
+        assert_eq!(trimmed[0]["name"], "web");
+        assert_eq!(trimmed[0]["state"], "running");
+        assert_eq!(trimmed[0]["pid"], 123);
+        // Long commands shorten; short ones pass through.
+        assert_eq!(trimmed[0]["cmd"], "sh -c npm …");
+        assert_eq!(trimmed[1]["cmd"], "true");
+        // Dropped fields stay dropped.
+        for job in trimmed.as_array().unwrap() {
+            assert!(job.get("env").is_none(), "{job}");
+            assert!(job.get("cwd").is_none(), "{job}");
+            assert!(job.get("started_at").is_none(), "{job}");
+        }
+        // Non-array payloads pass through for the caller to handle.
+        assert_eq!(trim_job_list(&json!({"ok": true})), json!({"ok": true}));
+    }
+
+    #[test]
+    fn truncation_marks_partial_output() {
+        let big = "x".repeat(MAX_TOOL_TEXT_BYTES + 100);
+        let cut = apply_text_ceiling("tail", big);
+        assert!(cut.len() < MAX_TOOL_TEXT_BYTES + 200, "{}", cut.len());
+        assert!(cut.contains("[truncated"), "{cut}");
+        assert!(cut.contains("fewer `lines`"), "{cut}");
+
+        let small = "short".to_string();
+        assert_eq!(apply_text_ceiling("tail", small.clone()), small);
+
+        // Multi-byte content is cut at a UTF-8 boundary, never mid-character.
+        let wide = "é".repeat(MAX_TOOL_TEXT_BYTES);
+        let cut = apply_text_ceiling("list", wide);
+        assert!(cut.contains("[truncated"), "{cut}");
+        assert!(std::str::from_utf8(cut.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn similar_job_names_ranks_exact_matches_first() {
+        let jobs = json!([
+            { "id": "aaaabbbb-1", "name": "worker" },
+            { "id": "web-1111", "name": "web" },
+            { "id": "web-2222", "name": "website" },
+            { "id": "zzzz9999", "name": "db" }
+        ]);
+        let suggestions = similar_job_names("web", &jobs);
+        assert_eq!(suggestions, vec!["web", "website"]);
+        assert!(similar_job_names("nomatchatall", &jobs).is_empty());
+        assert!(similar_job_names("web", &json!({"not": "an array"})).is_empty());
+    }
+
+    #[test]
+    fn kill_description_states_sigterm_first() {
+        let tools = tool_registry();
+        let kill = tools.iter().find(|tool| tool.name == "kill").unwrap();
+        assert!(kill.description.contains("SIGTERM"), "{}", kill.description);
+        assert!(
+            !kill.description.contains("SIGKILL)"),
+            "{}",
+            kill.description
         );
     }
 

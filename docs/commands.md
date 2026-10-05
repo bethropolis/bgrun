@@ -754,13 +754,13 @@ Requests are handled **one at a time**, in the order received. A long-running to
 
 | Tool | Maps to | Notes |
 |---|---|---|
-| `run` | `bgrun run` | Takes `RunArgs` (same fields as the schema command); single-word `cmd` entries resolve against `bgrun.toml` jobs |
-| `list` | `list` | Optional `workspace` filter |
+| `run` | `bgrun run` | Takes `RunArgs` (same fields as the schema command); single-word `cmd` entries resolve against `bgrun.toml` jobs. `wait: true` folds run+wait into one call |
+| `list` | `list` | Optional `workspace` filter; trimmed fields by default, `verbose: true` for full records |
 | `status` | `status` | `id` accepts job ID or name handle |
-| `kill` | `kill` | `id`, or `workspace` to kill every job in a workspace |
+| `kill` | `kill` | SIGTERM first, escalating to SIGKILL; `id`, or `workspace` to kill every job in a workspace |
 | `stop` | `stop` | Graceful: SIGTERM then SIGKILL after `timeout_ms` (default 10000) |
 | `restart` | `restart` | Stop (if alive) then re-spawn from the stored definition |
-| `tail` | `tail` | `lines`, `level`, `stream`, `filter_regex`, `digest`, `strip_ansi`; no follow (stateless) |
+| `tail` | `tail` | `lines` (capped at 1000), `level`, `stream`, `filter_regex`, `digest`, `strip_ansi`; `digest` without `lines` returns only the summary; no follow (stateless) |
 | `diff` | `diff` | Incremental poll: returns only lines added since the previous `diff` call for that job |
 | `wait` | `wait` | Blocks until ready/terminal/`timeout_ms` (default 60000) |
 | `send` | `send` | Writes to a PTY job's stdin (append `\n` for Enter) |
