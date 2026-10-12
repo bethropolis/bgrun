@@ -26,11 +26,12 @@ The daemon auto-starts on the first tool call, same as the CLI.
 
 ## What it registers
 
-- **15 tools** (`bgrun_*` namespace): `run` (with `wait:true` folding),
+- **16 tools** (`bgrun_*` namespace): `run` (with `wait:true` folding),
   `list` (trimmed by default, `verbose:true` for full records), `status`,
   `kill`, `stop`, `restart`, `tail` (`digest:true` alone returns only the
   summary), `diff`, `wait`, `send`, `stats`, `run_group`, `expect`, `screen`,
-  `clean`. Same 64KB / 1000-line token budget as `bgrun mcp`
+  `clean`, plus plugin-only `watch` (opt an already-running job into
+  completion notifications). Same 64KB / 1000-line token budget as `bgrun mcp`
   (`crates/bgrun-cli/src/mcp.rs`).
 - **Skill** `bgrun` — synced copy of `docs/bgrun/SKILL.md`.
 - **Commands** `/bg-run`, `/bg-tail` — guidance wrappers that steer the

@@ -17,6 +17,8 @@ const EXPECTED_TOOLS = [
   "expect",
   "screen",
   "clean",
+  // Plugin-only: opt an already-running job into completion notifications.
+  "watch",
 ];
 
 describe("interactive inputs", () => {
@@ -56,7 +58,7 @@ describe("resolveJobIdInList", () => {
 });
 
 describe("bgrunTools registry", () => {
-  test("covers all 15 daemon commands", () => {
+  test("covers all 15 daemon commands plus plugin-only watch", () => {
     const tools = bgrunTools({ bin: "bgrun" });
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
     for (const tool of tools) {

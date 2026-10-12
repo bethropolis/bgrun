@@ -606,5 +606,52 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
       },
       name: "clean",
     },
+    {
+      description:
+        "Track an already-running job for completion notifications in this session — for jobs started with `notify: false` or from the CLI. Pass `notify: false` to untrack instead.",
+      async execute(input, context) {
+        const handle = str(input["id"]);
+        if (!handle) throw new Error("missing required argument: id");
+        const uuid = await resolveJobId(bin, handle);
+        if (!uuid) {
+          throw new Error(await withSuggestions(bin, "job not found", handle));
+        }
+        if (input["notify"] === false) {
+          await untrackLogged(deps.tracker, uuid, "unwatch");
+          return { content: renderToolText("watch", { watching: false, id: uuid }) };
+        }
+        if (!deps.tracker || deps.tracker.defaultMode === false) {
+          throw new Error("notifications are disabled (plugin option \"notify\": false)");
+        }
+        await deps.tracker
+          .track(uuid, {
+            createdAt: Date.now(),
+            label: handle,
+            mode: deps.tracker.defaultMode,
+            readyNotified: false,
+            sessionID: context.sessionID,
+          })
+          .catch((error) => {
+            throw new Error(`failed to track ${uuid}: ${error}`);
+          });
+        return {
+          content: renderToolText("watch", {
+            id: uuid,
+            mode: deps.tracker.defaultMode,
+            watching: true,
+          }),
+        };
+      },
+      input: {
+        additionalProperties: false,
+        properties: {
+          id: { description: "Job ID, name handle, or unique id prefix.", type: "string" },
+          notify: { description: "Set false to untrack instead (default true).", type: "boolean" },
+        },
+        required: ["id"],
+        type: "object",
+      },
+      name: "watch",
+    },
   ];
 }

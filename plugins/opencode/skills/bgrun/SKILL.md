@@ -129,6 +129,12 @@ Control keys are raw bytes in `send` (`--enter` is just `\n`):
 Sizing: `run --pty --cols 120 --rows 40` (defaults 80x24, no resize while
 running). Kill with Ctrl+C via `send` (`\x03`) or `bgrun kill`.
 
+Slow starters: shells that probe terminal features stall on startup under
+bgrun — fish 4.x waits ~10s for device-attribute replies no dumb PTY master
+sends, then warns and carries on. Just `expect` the real prompt with a
+generous timeout; `sh`/`bash --noprofile` come up instantly if you only need
+a shell.
+
 Honest limits: `screen` returns recent output lines, not a rendered terminal
 grid — line-oriented programs (REPLs, `pdb`, installers, wizards, password
 prompts) work great; full-screen redraw apps (`vim`, `htop`, `lazygit`) that
