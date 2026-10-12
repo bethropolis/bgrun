@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bgrunTools } from "../lib/tools.ts";
+import { bgrunTools, resolveJobIdInList } from "../lib/tools.ts";
 
 const EXPECTED_TOOLS = [
   "run",
@@ -33,6 +33,25 @@ describe("interactive inputs", () => {
     expect(send.description).toContain("u001b");
     const expectTool = tools.find((t) => t.name === "expect")!;
     expect(expectTool.description).toContain(">>>");
+  });
+});
+
+describe("resolveJobIdInList", () => {
+  const jobs = [
+    { id: "abcdef01-1111", name: "web" },
+    { id: "abcdef02-2222", name: "worker" },
+    { id: "99990000-3333", name: null },
+  ];
+
+  test("mirrors daemon resolution: uuid, name, unique prefix", () => {
+    expect(resolveJobIdInList(jobs, "abcdef01-1111")).toBe("abcdef01-1111");
+    expect(resolveJobIdInList(jobs, "web")).toBe("abcdef01-1111");
+    expect(resolveJobIdInList(jobs, "99990000")).toBe("99990000-3333");
+    // Ambiguous prefix resolves to nothing (daemon rejects it too).
+    expect(resolveJobIdInList(jobs, "abcdef")).toBeUndefined();
+    expect(resolveJobIdInList(jobs, "nope")).toBeUndefined();
+    expect(resolveJobIdInList(jobs, "abc")).toBeUndefined(); // too short
+    expect(resolveJobIdInList({ not: "array" }, "web")).toBeUndefined();
   });
 });
 

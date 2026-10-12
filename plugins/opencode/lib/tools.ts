@@ -82,6 +82,52 @@ async function failWithSuggestions(bin: string, stdout: string, query?: string):
   throw new Error(await withSuggestions(bin, errorText(stdout), query));
 }
 
+/// Mirror the daemon's id resolution (exact UUID, exact name, unique id
+/// prefix of 4+ chars) over a `list --json` payload. Tools accept any handle
+/// but tracking is keyed by UUID, so kill/stop/restart must resolve before
+/// untracking — otherwise the entry leaks and a dead job notifies later.
+export function resolveJobIdInList(jobs: unknown, handle: string): string | undefined {
+  if (!Array.isArray(jobs) || handle.length === 0) return undefined;
+  let prefix: string | undefined;
+  for (const entry of jobs) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record["id"] === "string" ? (record["id"] as string) : "";
+    const name = typeof record["name"] === "string" ? (record["name"] as string) : "";
+    if (id === handle || name === handle) return id;
+    if (handle.length >= 4 && id.startsWith(handle)) {
+      if (prefix !== undefined) return undefined; // ambiguous
+      prefix = id;
+    }
+  }
+  return prefix;
+}
+
+async function resolveJobId(bin: string, handle: string): Promise<string | undefined> {
+  try {
+    const result = await runBgrun(bin, ["list", "--json"]);
+    if (!result.ok) return undefined;
+    return resolveJobIdInList(parseNdjson(result.stdout), handle);
+  } catch {
+    return undefined;
+  }
+}
+
+/// Untrack loudly-failing: a swallowed untrack error is how dead jobs Leak
+/// into later spurious notifications (the entry survives every reload via
+/// persisted storage).
+async function untrackLogged(
+  tracker: ToolDeps["tracker"],
+  id: string,
+  why: string,
+): Promise<void> {
+  try {
+    await tracker?.untrack(id);
+  } catch (error) {
+    console.error(`[bgrun] untrack ${id} after ${why} failed: ${error}`);
+  }
+}
+
 function idSchema(description = "Job ID, name handle, or unique id prefix (min 4 chars).") {
   return {
     additionalProperties: false,
@@ -254,8 +300,9 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         const args = workspace ? ["kill", "--json", "--workspace", workspace, "--force"] : ["kill", "--json", id as string];
         const result = await runBgrun(bin, args, context.signal);
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        // User-terminated: never notify for your own kill.
-        if (id) await deps.tracker?.untrack(id).catch(() => {});
+        // User-terminated: never notify for your own kill. Resolve to the
+        // UUID first — tracking is keyed by UUID, not by name/prefix.
+        if (id) await untrackLogged(deps.tracker, (await resolveJobId(bin, id)) ?? id, "kill");
         return { content: renderToolText("kill", parseJson(result.stdout)) };
       },
       input: {
@@ -280,7 +327,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           context.signal,
         );
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        await deps.tracker?.untrack(id).catch(() => {});
+        await untrackLogged(deps.tracker, (await resolveJobId(bin, id)) ?? id, "stop");
         return { content: renderToolText("stop", parseJson(result.stdout)) };
       },
       input: {
@@ -305,7 +352,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           context.signal,
         );
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        await deps.tracker?.untrack(id).catch(() => {});
+        await untrackLogged(deps.tracker, (await resolveJobId(bin, id)) ?? id, "restart");
         const record = parseJson(result.stdout) as AnyRecord;
         await trackSpawn(deps, input, context.sessionID, record);
         return { content: renderToolText("restart", record) };
