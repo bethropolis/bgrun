@@ -554,7 +554,7 @@ The connection is closed automatically when the job exits.
 Show last N lines from a job's in-memory ring buffer (non-blocking). Unlike `bgrun tail`, this reads from a live memory buffer rather than disk, making it suitable for rapid polling without I/O overhead.
 
 ```
-bgrun screen <ID> [--lines <N>]
+bgrun screen <ID> [--lines <N>] [--strip-ansi]
 ```
 
 **Flags**
@@ -562,6 +562,7 @@ bgrun screen <ID> [--lines <N>]
 | Flag | Description |
 |---|---|
 | `--lines <N>` | Number of lines to show (default: 20) |
+| `--strip-ansi` | Strip ANSI escape codes (colors, cursor codes) from output |
 
 **Examples**
 
@@ -626,6 +627,10 @@ Wait for a pattern to appear in a job's log output. Returns when the pattern is 
 ```
 bgrun expect <ID> <PATTERN> [--regex] [--timeout <DURATION>]
 ```
+
+Interactive prompts (`>>> `, `password: `) never end with a newline, so they
+sit in the reader's buffer instead of the log file — `expect` matches those
+unflushed bytes directly and returns them with `"line_number": null`.
 
 **Flags**
 

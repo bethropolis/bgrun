@@ -97,6 +97,45 @@ bgrun send <id> --enter          # just press Enter
 bgrun send <id> <text> --newline # send text + newline
 ```
 
+## Interactive sessions (PTY) — driving TUIs, REPLs, wizards
+
+This is what plain background shells cannot do: spawn an interactive program
+and operate it. Start with `--pty`, then loop `expect` → `screen` → `send`:
+
+```bash
+bgrun run --pty -n repl -- python3 -i
+bgrun expect repl ">>>" --timeout 10s   # prompts match immediately, even mid-line
+bgrun screen repl --strip-ansi          # see current output without color codes
+bgrun send repl "1+1" --enter
+bgrun kill repl
+```
+
+Prefer `expect` over polling `screen`: it blocks until the prompt appears
+instead of burning context re-reading output. `expect` matches prompts the
+instant they are printed (returned with `"line_number": null` since the bytes
+are not a log line yet); `tail`/`screen` show them once later output arrives.
+
+Control keys are raw bytes in `send` (`--enter` is just `\n`):
+
+| Key | Bytes |
+|-----|-------|
+| Enter | `\n` (or `--enter`) |
+| Esc | `\x1b` |
+| Up / Down / Left / Right | `\x1b[A` / `\x1b[B` / `\x1b[C` / `\x1b[D` |
+| Tab | `\t` |
+| Ctrl+C | `\x03` |
+| Ctrl+D (EOF) | `\x04` |
+
+Sizing: `run --pty --cols 120 --rows 40` (defaults 80x24, no resize while
+running). Kill with Ctrl+C via `send` (`\x03`) or `bgrun kill`.
+
+Honest limits: `screen` returns recent output lines, not a rendered terminal
+grid — line-oriented programs (REPLs, `pdb`, installers, wizards, password
+prompts) work great; full-screen redraw apps (`vim`, `htop`, `lazygit`) that
+reposition the cursor come back garbled. For those, prefer their
+non-interactive flags (`lazygit --help` has many) or drive the underlying CLI
+directly.
+
 ## Log reading — token efficient
 
 ```bash

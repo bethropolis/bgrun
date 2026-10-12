@@ -70,6 +70,28 @@ pub static LOG_WRITE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mute
 pub static SCREEN_BUFFERS: LazyLock<tokio::sync::Mutex<HashMap<String, VecDeque<u8>>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
+/// Unflushed output: bytes read from a job since the last `\n`, for both PTY
+/// and piped capture. Interactive prompts (`>>> `, `password: `, wizard
+/// questions) never end with a newline, so without this they would be
+/// invisible to `tail`, `screen`, and `expect` until later output flushes
+/// the line. `expect` matches against these bytes directly; entries are
+/// cleared when the line completes, the job exits, or the record is dropped.
+pub static UNFLUSHED_PARTIAL: LazyLock<std::sync::Mutex<HashMap<String, Vec<u8>>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Publish (or clear) a job's unflushed bytes. Lock is held only for the
+/// map operation, never across I/O.
+fn publish_partial(id: &str, partial: &[u8]) {
+    let mut partials = UNFLUSHED_PARTIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if partial.is_empty() {
+        partials.remove(id);
+    } else {
+        partials.insert(id.to_string(), partial.to_vec());
+    }
+}
+
 const SCREEN_BUFFER_MAX: usize = 64 * 1024;
 
 /// Binds to an ephemeral port to find a free one, then returns the port number.
@@ -305,6 +327,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
             STDIN_HANDLES.lock().await.remove(&id);
             LOG_WRITE_LOCKS.lock().await.remove(&id);
             SCREEN_BUFFERS.lock().await.remove(&id);
+            publish_partial(&id, &[]);
             return Ok(dup);
         }
         store.insert(job);
@@ -454,6 +477,7 @@ async fn handle_job_exit(id: String, store: Arc<Mutex<JobStore>>, exit_code: Opt
     LOG_WRITE_LOCKS.lock().await.remove(&id);
     LOG_LINE_COUNTERS.lock().await.remove(&id);
     SCREEN_BUFFERS.lock().await.remove(&id);
+    publish_partial(&id, &[]);
     // Drop the job's cgroup (empty now that its processes are gone).
     #[cfg(target_os = "linux")]
     {
@@ -980,6 +1004,7 @@ async fn spawn_pty_job(
             PTY_PAIRS.lock().await.remove(&id);
             JOB_BROADCASTS.lock().await.remove(&id);
             SCREEN_BUFFERS.lock().await.remove(&id);
+            publish_partial(&id, &[]);
             return Ok(dup);
         }
         store.insert(job);
@@ -1493,6 +1518,7 @@ async fn capture_output(
                 if !partial.is_empty() {
                     write_ts_line(&mut file, &partial, id, label).await;
                 }
+                publish_partial(id, &[]);
                 break;
             }
             Ok(n) => {
@@ -1508,6 +1534,9 @@ async fn capture_output(
                 if start < n {
                     partial.extend_from_slice(&buf[start..n]);
                 }
+                // Same prompt-visibility rationale as the PTY reader above:
+                // `read -p` prompts and REPLs without a TTY never emit `\n`.
+                publish_partial(id, &partial);
                 // Check for rotation (only once per chunk)
                 if let Ok(meta) = tokio::fs::metadata(&log_path).await
                     && meta.len() > rotation.max_bytes
@@ -1525,7 +1554,10 @@ async fn capture_output(
                     file = new_file;
                 }
             }
-            Err(_) => break,
+            Err(_) => {
+                publish_partial(id, &[]);
+                break;
+            }
         }
     }
 }
@@ -1721,6 +1753,7 @@ fn capture_pty_output(
                 if !partial.is_empty() {
                     write_ts_line_sync(&mut file, &partial, id);
                 }
+                publish_partial(id, &[]);
                 break;
             }
             Ok(n) => {
@@ -1739,6 +1772,10 @@ fn capture_pty_output(
                 if start < n {
                     partial.extend_from_slice(&buf[start..n]);
                 }
+                // Prompts rarely end with `\n`: publish the unflushed tail so
+                // `expect` can match interactive prompts immediately instead
+                // of waiting for later output to complete the line.
+                publish_partial(id, &partial);
                 // Check for rotation (only once per chunk)
                 if let Ok(meta) = std::fs::metadata(log_path)
                     && meta.len() > rotation.max_bytes
@@ -1756,6 +1793,7 @@ fn capture_pty_output(
             }
             Err(e) => {
                 error!(id = %id, "error reading PTY output: {}", e);
+                publish_partial(id, &[]);
                 break;
             }
         }
@@ -1897,6 +1935,28 @@ mod tests {
         assert_eq!(
             restart_trigger(&RestartPolicy::Always { backoff_ms: 500 }, &killed, false),
             None
+        );
+    }
+
+    #[test]
+    fn test_publish_partial_roundtrip() {
+        // Publishing unflushed reader bytes round-trips through the shared
+        // map `expect` consults; empty publishes clear the entry.
+        publish_partial("test-partial-roundtrip", b"PROMPT> ");
+        {
+            let partials = UNFLUSHED_PARTIAL.lock().unwrap();
+            assert_eq!(
+                partials.get("test-partial-roundtrip").map(Vec::as_slice),
+                Some(b"PROMPT> ".as_slice())
+            );
+        }
+        publish_partial("test-partial-roundtrip", &[]);
+        assert!(
+            UNFLUSHED_PARTIAL
+                .lock()
+                .unwrap()
+                .get("test-partial-roundtrip")
+                .is_none()
         );
     }
 

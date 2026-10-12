@@ -19,6 +19,23 @@ const EXPECTED_TOOLS = [
   "clean",
 ];
 
+describe("interactive inputs", () => {
+  test("run exposes pty sizing, screen exposes strip_ansi", () => {
+    const tools = bgrunTools({ bin: "bgrun" });
+    const run = tools.find((t) => t.name === "run")!;
+    expect(run.input.properties.pty_cols).toBeDefined();
+    expect(run.input.properties.pty_rows).toBeDefined();
+    expect(run.input.properties.notify).toBeDefined();
+    expect(run.description).toContain("pty");
+    const screen = tools.find((t) => t.name === "screen")!;
+    expect(screen.input.properties.strip_ansi).toBeDefined();
+    const send = tools.find((t) => t.name === "send")!;
+    expect(send.description).toContain("u001b");
+    const expectTool = tools.find((t) => t.name === "expect")!;
+    expect(expectTool.description).toContain(">>>");
+  });
+});
+
 describe("bgrunTools registry", () => {
   test("covers all 15 daemon commands", () => {
     const tools = bgrunTools({ bin: "bgrun" });

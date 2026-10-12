@@ -513,9 +513,19 @@ async fn handle_stream_logs(
     Ok(())
 }
 
+/// Matches one decoded log line — or an unflushed partial such as an
+/// interactive prompt — against an `expect` pattern: substring by default,
+/// precompiled regex when the caller passed `--regex`.
+fn match_line(pattern: &str, expect_re: Option<&regex::Regex>, content: &str) -> bool {
+    if let Some(re) = expect_re {
+        re.is_match(content)
+    } else {
+        content.contains(pattern)
+    }
+}
+
 /// Dispatches a command to the appropriate handler.
-async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::Value {
-    let req_id = request.id;
+async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::Value {    let req_id = request.id;
     let cmd_name = format!("{:?}", request.command);
     let audit_args = args_summary(&request.command);
 
@@ -984,6 +994,16 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
                 None
             };
 
+            /// Matches one decoded log line (or an unflushed partial) against
+            /// the caller's pattern, substring or precompiled regex.
+            fn line_matches(
+                pattern: &str,
+                expect_re: Option<&regex::Regex>,
+                content: &str,
+            ) -> bool {
+                match_line(pattern, expect_re, content)
+            }
+
             loop {
                 if start.elapsed() >= timeout {
                     let result = serde_json::json!({
@@ -1023,11 +1043,7 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
                         // false-positive and `^`/`$` anchors behave.
                         for (i, raw) in content.lines().enumerate() {
                             let (_, _, content) = crate::log_manager::parse_line(raw);
-                            let found = if let Some(ref re) = expect_re {
-                                re.is_match(&content)
-                            } else {
-                                content.contains(&pattern)
-                            };
+                            let found = line_matches(&pattern, expect_re.as_ref(), &content);
 
                             if found {
                                 let line_number = line_offset + i as u64 + 1;
@@ -1047,6 +1063,30 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
 
                         line_offset += content.lines().count() as u64;
                     }
+                }
+
+                // Unflushed bytes never reach the log file: interactive
+                // prompts (`>>> `, `password: `) sit in the reader's partial
+                // buffer until later output completes the line. Match against
+                // them too, or `expect` can never catch a live prompt.
+                // `line_number` is null: the bytes are not a log line yet.
+                let partial_hit: Option<String> = {
+                    let partials = runner::UNFLUSHED_PARTIAL
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    partials
+                        .get(&job_id)
+                        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                };
+                if let Some(text) = partial_hit
+                    && line_matches(&pattern, expect_re.as_ref(), &text)
+                {
+                    let result = serde_json::json!({
+                        "matched": true,
+                        "line_number": null,
+                        "content": text,
+                    });
+                    break Response::ok(req_id.clone(), result);
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1131,7 +1171,11 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
             // StreamLogs is handled upstream in handle_connection before dispatch.
             Response::err(req_id.clone(), "stream logs not supported via dispatch")
         }
-        Command::Screen { id, lines } => {
+        Command::Screen {
+            id,
+            lines,
+            strip_ansi,
+        } => {
             // Resolve name to UUID under lock
             let actual_id = {
                 let store_ref = store.lock().await;
@@ -1156,7 +1200,16 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
                 let count = lines.min(all_lines.len());
                 let tail: Vec<String> = all_lines[all_lines.len().saturating_sub(count)..]
                     .iter()
-                    .map(std::string::ToString::to_string)
+                    .map(|line| {
+                        if strip_ansi {
+                            String::from_utf8_lossy(&strip_ansi_escapes::strip(
+                                line.as_bytes(),
+                            ))
+                            .into_owned()
+                        } else {
+                            std::string::ToString::to_string(line)
+                        }
+                    })
                     .collect();
                 tail
             });
@@ -1353,8 +1406,7 @@ mod tests {
     use bgrun_core::JobStore;
 
     #[tokio::test]
-    async fn status_for_missing_job_returns_error() {
-        let request = Request {
+    async fn status_for_missing_job_returns_error() {        let request = Request {
             id: "req-1".into(),
             command: Command::Status {
                 id: "missing".into(),
@@ -1460,5 +1512,134 @@ mod tests {
         assert_eq!(response["data"]["matched"], false, "response: {response}");
 
         let _ = tokio::fs::remove_dir_all(&job_dir).await;
+    }
+
+    /// `expect` matches interactive prompts sitting in the reader's partial
+    /// buffer: prompts never end with `\n`, so they never reach the log file
+    /// until later output flushes the line. Regression test for agents
+    /// waiting on a REPL `>>> ` that `expect` could never see live.
+    #[tokio::test]
+    async fn expect_matches_unflushed_partial_prompt() {
+        use bgrun_core::Job;
+        use bgrun_proto::JobState;
+
+        let id = "expect-partial-test";
+        let job_dir = crate::state::job_dir(id);
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+        tokio::fs::create_dir_all(&job_dir).await.unwrap();
+        // Empty log: the prompt exists ONLY as unflushed bytes.
+        tokio::fs::write(job_dir.join("stdout.log"), "").await.unwrap();
+
+        let store = Arc::new(Mutex::new(JobStore::new()));
+        {
+            let mut job = Job::new(id.into(), vec!["true".into()], Some("t".into()), None);
+            job.state = JobState::Running;
+            store.lock().await.insert(job);
+        }
+        {
+            let mut partials = runner::UNFLUSHED_PARTIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            partials.insert(id.to_string(), b"\x1b[1;35m>>> ".to_vec());
+        }
+
+        let response = dispatch(
+            Request {
+                id: "req-1".into(),
+                command: Command::Expect {
+                    id: id.into(),
+                    pattern: ">>>".into(),
+                    is_regex: false,
+                    timeout_ms: 2000,
+                },
+            },
+            store,
+        )
+        .await;
+
+        assert_eq!(response["ok"], true, "response: {response}");
+        assert_eq!(response["data"]["matched"], true, "response: {response}");
+        // Not a log line yet: null line number, raw partial as content.
+        assert!(response["data"]["line_number"].is_null(), "response: {response}");
+        assert!(
+            response["data"]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(">>>"),
+            "response: {response}"
+        );
+
+        {
+            let mut partials = runner::UNFLUSHED_PARTIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            partials.remove(id);
+        }
+        let _ = tokio::fs::remove_dir_all(&job_dir).await;
+    }
+
+    /// `screen --strip-ansi` removes color/cursor codes for token-efficient
+    /// reads of interactive output; without the flag bytes pass through.
+    #[tokio::test]
+    async fn screen_strip_ansi_cleans_output() {
+        use bgrun_core::Job;
+        use bgrun_proto::JobState;
+        use std::collections::VecDeque;
+
+        let id = "screen-strip-test";
+        let store = Arc::new(Mutex::new(JobStore::new()));
+        {
+            let mut job = Job::new(id.into(), vec!["true".into()], Some("t".into()), None);
+            job.state = JobState::Running;
+            store.lock().await.insert(job);
+        }
+        {
+            let mut buffers = runner::SCREEN_BUFFERS.lock().await;
+            let mut buf = VecDeque::new();
+            buf.extend(b"\x1b[1;35m>>> \x1b[0m\n".iter().copied());
+            buffers.insert(id.to_string(), buf);
+        }
+
+        let stripped = dispatch(
+            Request {
+                id: "req-1".into(),
+                command: Command::Screen {
+                    id: id.into(),
+                    lines: 20,
+                    strip_ansi: true,
+                },
+            },
+            store.clone(),
+        )
+        .await;
+        assert_eq!(stripped["ok"], true, "response: {stripped}");
+        assert_eq!(stripped["data"], serde_json::json!([">>> "]));
+
+        let raw = dispatch(
+            Request {
+                id: "req-2".into(),
+                command: Command::Screen {
+                    id: id.into(),
+                    lines: 20,
+                    strip_ansi: false,
+                },
+            },
+            store,
+        )
+        .await;
+        assert_eq!(raw["ok"], true, "response: {raw}");
+        assert_eq!(raw["data"], serde_json::json!(["\u{1b}[1;35m>>> \u{1b}[0m"]));
+
+        runner::SCREEN_BUFFERS.lock().await.remove(id);
+    }
+
+    /// Substring and regex matching used by `expect` for both log lines and
+    /// unflushed partials.
+    #[test]
+    fn match_line_covers_substring_and_regex() {
+        assert!(match_line(">>>", None, "\x1b[1;35m>>> "));
+        assert!(!match_line(">>>", None, "booting"));
+        let re = regex::Regex::new(r"listening on :\d+").unwrap();
+        assert!(match_line("", Some(&re), "listening on :8080"));
     }
 }

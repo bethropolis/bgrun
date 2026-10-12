@@ -141,7 +141,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
   return [
     {
       description:
-        "Start a background job and return its record. `cmd` is the command vector. Set `wait: true` to block until ready in the same call instead of calling bgrun_wait separately. The job is completion-tracked: this session is notified when it becomes ready or exits (pass `notify: false` to opt out).",
+        "Start a background job and return its record. `cmd` is the command vector. Set `wait: true` to block until ready in the same call instead of calling bgrun_wait separately. For interactive programs set `pty: true`, then drive them with bgrun_send / bgrun_screen / bgrun_expect. The job is completion-tracked: this session is notified when it becomes ready or exits (pass `notify: false` to opt out).",
       async execute(input, context) {
         const cmd = Array.isArray(input["cmd"])
           ? (input["cmd"] as unknown[]).map(String)
@@ -157,6 +157,10 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         const cwd = str(input["cwd"]);
         if (cwd) args.push("--cwd", cwd);
         if (bool(input["pty"])) args.push("--pty");
+        const cols = num(input["pty_cols"]);
+        if (cols !== undefined) args.push("--cols", String(Math.max(1, Math.round(cols))));
+        const rows = num(input["pty_rows"]);
+        if (rows !== undefined) args.push("--rows", String(Math.max(1, Math.round(rows))));
         if (bool(input["sandbox"])) args.push("--sandbox");
         const env = input["env"];
         if (env && typeof env === "object") {
@@ -190,7 +194,9 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           env: { additionalProperties: { type: "string" }, description: "Environment variables.", type: "object" },
           name: { description: "Stable handle (idempotent re-run).", type: "string" },
           notify: { description: "Notify this session on ready/exit (default: plugin setting).", type: "boolean" },
-          pty: { description: "Allocate a pseudo-terminal.", type: "boolean" },
+          pty: { description: "Allocate a pseudo-terminal (for interactive programs; drive with bgrun_send/bgrun_screen/bgrun_expect).", type: "boolean" },
+          pty_cols: { description: "PTY width in columns (default 80, only with pty).", type: "number" },
+          pty_rows: { description: "PTY height in rows (default 24, only with pty).", type: "number" },
           ready_when: { description: "Mark ready when a log line contains this substring.", type: "string" },
           replace: { description: "Kill an existing same-name job first.", type: "boolean" },
           sandbox: { description: "Linux network+IPC isolation (piped mode only).", type: "boolean" },
@@ -410,7 +416,8 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
       name: "wait",
     },
     {
-      description: "Write data to a job's stdin. Include a trailing newline in `data` to simulate pressing Enter.",
+      description:
+        "Drive an interactive job's stdin: start it with pty:true, then send input here. End `data` with \\n for Enter. Control keys are raw bytes: Esc is \\u001b, Up/Down/Left/Right are \\u001b[A/B/C/D, Tab is \\t, Ctrl+C is \\u0003, Ctrl+D is \\u0004. Read the result with bgrun_screen (or bgrun_expect to block until a prompt appears).",
       async execute(input, context) {
         const id = str(input["id"]);
         const data = typeof input["data"] === "string" ? (input["data"] as string) : undefined;
@@ -480,13 +487,14 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
     },
     {
       description:
-        "Block until `pattern` appears in the job's log (plain substring by default, regex with `is_regex: true`), or the timeout elapses (default 60000ms).",
+        "Block until `pattern` appears in the job's output (plain substring by default, regex with `is_regex: true`), or the timeout elapses (default 60000ms). Matches interactive prompts immediately — even mid-line ones like `>>> ` that never reach the log file.",
       async execute(input, context) {
         const id = str(input["id"]);
         const pattern = str(input["pattern"]);
         if (!id) throw new Error("missing required argument: id");
         if (!pattern) throw new Error("missing required argument: pattern");
         const args = ["expect", "--json", id, pattern];
+        if (bool(input["is_regex"])) args.push("--regex");
         if (bool(input["is_regex"])) args.push("--regex");
         args.push(...timeoutArgs("--timeout", num(input["timeout_ms"]), 60_000));
         const result = await runBgrun(bin, args, context.signal);
@@ -507,12 +515,15 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
       name: "expect",
     },
     {
-      description: "Read the last `lines` (default 20, capped at 1000) rendered rows from a PTY job's in-memory screen buffer.",
+      description:
+        "Read the last `lines` (default 20, capped at 1000) from a job's in-memory output buffer without touching the log file. For interactive (PTY) jobs this is how you see REPL output and prompts; pass `strip_ansi: true` to remove color/cursor codes first.",
       async execute(input, context) {
         const id = str(input["id"]);
         if (!id) throw new Error("missing required argument: id");
         const lines = capLines(num(input["lines"]) ?? 20);
-        const result = await runBgrun(bin, ["screen", "--json", id, "--lines", String(lines)], context.signal);
+        const args = ["screen", "--json", id, "--lines", String(lines)];
+        if (bool(input["strip_ansi"])) args.push("--strip-ansi");
+        const result = await runBgrun(bin, args, context.signal);
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
         return { content: renderToolText("screen", parseJson(result.stdout)) };
       },
@@ -521,6 +532,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         properties: {
           id: { description: "Job ID or name.", type: "string" },
           lines: { description: "How many rows (default 20, capped at 1000).", type: "number" },
+          strip_ansi: { description: "Strip ANSI escape codes.", type: "boolean" },
         },
         required: ["id"],
         type: "object",

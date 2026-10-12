@@ -60,6 +60,15 @@ Tracking persists in plugin storage across reloads/restarts; dead sessions
 untrack instead of retrying; the loop only hits the daemon while jobs are
 tracked. Per call, pass `notify: false` to opt out.
 
+## Interactive sessions (PTY)
+
+`run` with `pty: true` (+ optional `pty_cols`/`pty_rows`), then loop
+`expect` → `screen` → `send`. `expect` matches prompts the instant they
+print (even mid-line); `screen` takes `strip_ansi: true` for clean reads;
+`send` takes raw bytes (`\n` Enter, `\x1b` Esc, `\x1b[A` arrows, `\x03`
+Ctrl+C). Full playbook with key table: `docs/bgrun/SKILL.md`
+("#Interactive sessions (PTY)").
+
 ## Prompt steering
 
 An append-only prompt hook nudges unmistakable foreground long-runners

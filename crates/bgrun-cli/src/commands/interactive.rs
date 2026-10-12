@@ -178,7 +178,7 @@ async fn job_menu(record: JobRecord) -> Result<()> {
             "Tail logs" => tail_flow(&id).await?,
             "Screen buffer (non-blocking peek)" => {
                 let lines = prompt_lines(20)?;
-                let _ = crate::commands::screen::screen(id.clone(), lines, false).await;
+                let _ = crate::commands::screen::screen(id.clone(), lines, false, false).await;
             }
             "Diff (only new lines)" => {
                 let _ =

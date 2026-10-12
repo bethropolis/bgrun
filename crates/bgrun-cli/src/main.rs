@@ -422,6 +422,10 @@ enum Commands {
         /// Number of lines to show [default: 20]
         #[arg(long, default_value_t = 20)]
         lines: usize,
+
+        /// Strip ANSI escape codes from output
+        #[arg(long)]
+        strip_ansi: bool,
     },
 
     /// Remove all terminated (crashed/exited/killed) jobs
@@ -683,8 +687,8 @@ async fn main() -> Result<()> {
         }) => {
             commands::completions::completions(active_ids, workspaces, shell, man).await?;
         }
-        Some(Commands::Screen { id, lines }) => {
-            commands::screen::screen(id, lines, json).await?;
+        Some(Commands::Screen { id, lines, strip_ansi }) => {
+            commands::screen::screen(id, lines, strip_ansi, json).await?;
         }
         Some(Commands::Clean { workspace, force }) => {
             commands::clean::clean(workspace, json, force).await?;

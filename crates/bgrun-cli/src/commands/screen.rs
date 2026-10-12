@@ -6,7 +6,7 @@ use crate::client::DaemonClient;
 use crate::output::output_mode;
 
 /// Shows the last N lines from a job's in-memory screen buffer (non-blocking).
-pub async fn screen(id: String, lines: usize, json: bool) -> Result<()> {
+pub async fn screen(id: String, lines: usize, strip_ansi: bool, json: bool) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     ensure_daemon_running(&socket_path).await?;
 
@@ -16,6 +16,7 @@ pub async fn screen(id: String, lines: usize, json: bool) -> Result<()> {
         .send::<serde_json::Value>(Command::Screen {
             id: id.clone(),
             lines,
+            strip_ansi,
         })
         .await?;
 

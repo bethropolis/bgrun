@@ -430,7 +430,8 @@ pub fn tool_registry() -> Vec<McpTool> {
             "Start a background job and return its record. `cmd` is the command \
              vector (see schema for the optional fields). Set `wait: true` to \
              block until the job is ready in the same call instead of calling \
-             `wait` separately.",
+             `wait` separately. For interactive programs set `pty: true`, then \
+             drive them with the `send`/`screen`/`expect` tools.",
             run_schema(),
         ),
         tool(
@@ -544,8 +545,11 @@ pub fn tool_registry() -> Vec<McpTool> {
         ),
         tool(
             "send",
-            "Write data to a PTY job's stdin. Append \"\\n\" to the data (or send just a \
-             newline) to simulate pressing Enter.",
+            "Drive an interactive job's stdin: start it with `pty: true`, then send input \
+             here. End `data` with \"\\n\" for Enter. Control keys are raw bytes: Esc is \
+             \"\\u001b\", Up/Down/Left/Right are \"\\u001b[A/B/C/D\", Tab is \"\\t\", \
+             Ctrl+C is \"\\u0003\", Ctrl+D is \"\\u0004\". Read the result with `screen` \
+             (or `expect` to block until a prompt appears).",
             json!({
                 "type": "object",
                 "properties": {
@@ -577,8 +581,10 @@ pub fn tool_registry() -> Vec<McpTool> {
         ),
         tool(
             "expect",
-            "Block until `pattern` appears in the job's log (plain substring by default, \
-             regex with `is_regex: true`), or `timeout_ms` elapses (default 60000).",
+            "Block until `pattern` appears in the job's output (plain substring by default, \
+             regex with `is_regex: true`), or `timeout_ms` elapses (default 60000). \
+             Matches interactive prompts immediately — even mid-line ones like `>>> ` \
+             that never reach the log file (returned with `line_number: null`).",
             json!({
                 "type": "object",
                 "properties": {
@@ -592,13 +598,16 @@ pub fn tool_registry() -> Vec<McpTool> {
         ),
         tool(
             "screen",
-            "Read the last `lines` (default 20) rendered rows from a PTY job's in-memory \
-             screen buffer without touching the log file.",
+            "Read the last `lines` (default 20, capped at 1000) from a job's in-memory \
+             output buffer without touching the log file. For interactive (PTY) jobs this \
+             is how you see REPL output and prompts; pass `strip_ansi: true` to remove \
+             color/cursor codes first.",
             json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "Job ID or name." },
-                    "lines": { "type": "integer", "description": "How many rows to return (default 20)." }
+                    "lines": { "type": "integer", "description": "How many rows to return (default 20)." },
+                    "strip_ansi": { "type": "boolean", "description": "Strip ANSI escape codes from content." }
                 },
                 "required": ["id"]
             }),
@@ -755,6 +764,7 @@ fn build_command(name: &str, arguments: &Value) -> std::result::Result<Command, 
         "screen" => Ok(Command::Screen {
             id: require_str(arguments, "id")?,
             lines: cap_lines(get_usize(arguments, "lines", 20)?),
+            strip_ansi: get_bool(arguments, "strip_ansi", false),
         }),
         "clean" => Ok(Command::Clean {
             workspace: get_str(arguments, "workspace"),
@@ -1204,6 +1214,7 @@ mod tests {
             Command::Screen {
                 id: "x".into(),
                 lines: 20,
+                strip_ansi: false,
             },
             Command::Clean { workspace: None },
             // Intentionally not MCP tools:
