@@ -137,10 +137,12 @@ a shell.
 
 Honest limits: `screen` returns recent output lines, not a rendered terminal
 grid — line-oriented programs (REPLs, `pdb`, installers, wizards, password
-prompts) work great; full-screen redraw apps (`vim`, `htop`, `lazygit`) that
-reposition the cursor come back garbled. For those, prefer their
-non-interactive flags (`lazygit --help` has many) or drive the underlying CLI
-directly.
+prompts) work great; cursor-addressed fullscreen apps (`vim`, `htop`,
+`lazygit`) only partly survive. A freshly drawn static view can read fine
+with `strip_ansi` (verified live against `nvim --clean`: tilde column and
+status line legible), but every redraw after an edit comes back garbled, so
+you cannot verify edits that way. For those apps, prefer their
+non-interactive flags or drive the underlying CLI directly.
 
 ## Log reading — token efficient
 
