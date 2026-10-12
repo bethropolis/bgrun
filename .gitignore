@@ -2,6 +2,9 @@
 /.zig-cache/
 Cargo.lock
 
+# plugin dependencies (reinstall with `bun install` in each plugin dir)
+plugins/*/node_modules/
+
 # mdBook output
 /book/
 /docs/book-src/
