@@ -4,6 +4,7 @@
 /// plugin matches the MCP server's token budget over either transport.
 
 import { errorText, parseJson, parseNdjson, runBgrun } from "./exec.ts";
+import type { NotifyMode, TrackedJob } from "./notify.ts";
 import {
   capLines,
   renderToolText,
@@ -13,6 +14,20 @@ import {
 
 export interface ToolDeps {
   bin: string;
+  /** Watcher hooks. Absent when notifications are fully disabled. */
+  tracker?: {
+    /** Default delivery when the caller passes no per-call `notify`. */
+    defaultMode: NotifyMode | false;
+    track: (id: string, entry: TrackedJob) => Promise<void>;
+    untrack: (id: string) => Promise<void>;
+    prune: () => Promise<void>;
+  };
+}
+
+export interface ToolExecContext {
+  signal: AbortSignal;
+  /** Originating OpenCode session — used for completion tracking. */
+  sessionID: string;
 }
 
 type AnyRecord = Record<string, any>;
@@ -88,9 +103,36 @@ function timeoutArgs(flag: string, timeoutMs: number | undefined, fallback: numb
 
 export interface BgrunToolDef {
   description: string;
-  execute: (input: AnyRecord, context: { signal: AbortSignal }) => Promise<{ content: string }>;
+  execute: (input: AnyRecord, context: ToolExecContext) => Promise<{ content: string }>;
   input: AnyRecord;
   name: string;
+}
+
+/// Resolve whether a spawn should be completion-tracked: per-call `notify`
+/// wins, otherwise the plugin default. Returns the delivery mode or null.
+function notifyModeFor(deps: ToolDeps, input: AnyRecord): NotifyMode | null {
+  if (typeof input["notify"] === "boolean") return input["notify"] ? "queue" : null;
+  const def = deps.tracker?.defaultMode;
+  return def === false || def === undefined ? null : def;
+}
+
+async function trackSpawn(
+  deps: ToolDeps,
+  input: AnyRecord,
+  sessionID: string,
+  record: AnyRecord,
+): Promise<void> {
+  const mode = notifyModeFor(deps, input);
+  const id = typeof record?.["id"] === "string" ? (record["id"] as string) : undefined;
+  if (!mode || !id || !sessionID) return;
+  const name = typeof record?.["name"] === "string" ? (record["name"] as string) : "";
+  await deps.tracker!.track(id, {
+    createdAt: Date.now(),
+    label: name.length > 0 ? `"${name}" (${id.slice(0, 8)})` : id.slice(0, 8),
+    mode,
+    readyNotified: false,
+    sessionID,
+  }).catch((error) => console.error(`[bgrun] track failed: ${error}`));
 }
 
 export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
@@ -99,7 +141,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
   return [
     {
       description:
-        "Start a background job and return its record. `cmd` is the command vector. Set `wait: true` to block until ready in the same call instead of calling bgrun_wait separately.",
+        "Start a background job and return its record. `cmd` is the command vector. Set `wait: true` to block until ready in the same call instead of calling bgrun_wait separately. The job is completion-tracked: this session is notified when it becomes ready or exits (pass `notify: false` to opt out).",
       async execute(input, context) {
         const cmd = Array.isArray(input["cmd"])
           ? (input["cmd"] as unknown[]).map(String)
@@ -124,7 +166,8 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         args.push("--", ...cmd);
         const result = await runBgrun(bin, args, context.signal);
         if (!result.ok) await failWithSuggestions(bin, result.stdout);
-        const record = parseJson(result.stdout);
+        const record = parseJson(result.stdout) as AnyRecord;
+        await trackSpawn(deps, input, context.sessionID, record);
         if (!bool(input["wait"])) return { content: renderToolText("run", record) };
         const id = (record as AnyRecord)?.["id"];
         if (typeof id !== "string") throw new Error("started job, but the daemon returned no job id to wait on");
@@ -146,6 +189,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           cwd: { description: "Working directory for the job.", type: "string" },
           env: { additionalProperties: { type: "string" }, description: "Environment variables.", type: "object" },
           name: { description: "Stable handle (idempotent re-run).", type: "string" },
+          notify: { description: "Notify this session on ready/exit (default: plugin setting).", type: "boolean" },
           pty: { description: "Allocate a pseudo-terminal.", type: "boolean" },
           ready_when: { description: "Mark ready when a log line contains this substring.", type: "string" },
           replace: { description: "Kill an existing same-name job first.", type: "boolean" },
@@ -204,6 +248,8 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         const args = workspace ? ["kill", "--json", "--workspace", workspace, "--force"] : ["kill", "--json", id as string];
         const result = await runBgrun(bin, args, context.signal);
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
+        // User-terminated: never notify for your own kill.
+        if (id) await deps.tracker?.untrack(id).catch(() => {});
         return { content: renderToolText("kill", parseJson(result.stdout)) };
       },
       input: {
@@ -228,6 +274,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           context.signal,
         );
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
+        await deps.tracker?.untrack(id).catch(() => {});
         return { content: renderToolText("stop", parseJson(result.stdout)) };
       },
       input: {
@@ -252,7 +299,10 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           context.signal,
         );
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        return { content: renderToolText("restart", parseJson(result.stdout)) };
+        await deps.tracker?.untrack(id).catch(() => {});
+        const record = parseJson(result.stdout) as AnyRecord;
+        await trackSpawn(deps, input, context.sessionID, record);
+        return { content: renderToolText("restart", record) };
       },
       input: {
         additionalProperties: false,
@@ -407,6 +457,11 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         } catch {
           data = parseJson(result.stdout);
         }
+        if (Array.isArray(data)) {
+          for (const record of data) {
+            await trackSpawn(deps, input, context.sessionID, record as AnyRecord);
+          }
+        }
         return { content: renderToolText("run_group", data) };
       },
       input: {
@@ -480,6 +535,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         if (workspace) args.push("--workspace", workspace);
         const result = await runBgrun(bin, args, context.signal);
         if (!result.ok) throw new Error(errorText(result.stdout));
+        await deps.tracker?.prune().catch(() => {});
         return { content: renderToolText("clean", parseJson(result.stdout)) };
       },
       input: {

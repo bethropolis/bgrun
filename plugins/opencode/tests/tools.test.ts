@@ -32,7 +32,10 @@ describe("bgrunTools registry", () => {
   test("live list round-trips against the real daemon", async () => {
     const tools = bgrunTools({ bin: "bgrun" });
     const list = tools.find((t) => t.name === "list")!;
-    const result = await list.execute({}, { signal: AbortSignal.timeout(15_000) });
+    const result = await list.execute(
+      {},
+      { sessionID: "ses_test", signal: AbortSignal.timeout(15_000) },
+    );
     // Trimmed list renders as a compact JSON array.
     expect(result.content.startsWith("[")).toBe(true);
   }, 20_000);

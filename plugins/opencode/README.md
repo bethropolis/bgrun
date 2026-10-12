@@ -36,6 +36,46 @@ The daemon auto-starts on the first tool call, same as the CLI.
 - **Commands** `/bg-run`, `/bg-tail` — guidance wrappers that steer the
   agent toward the right tool.
 
+## Beyond MCP: completion notifications
+
+MCP tools are stateless and session-blind. The plugin records which session
+started each job (`run` / `run_group` / `restart` all track; `kill` / `stop`
+untrack so your own termination never pings you) and a watcher polls the
+daemon, writing the outcome back into that exact session:
+
+```
+[bgrun] job "web" (abc123) is ready. Use bgrun_tail / bgrun_diff for logs ...
+[bgrun] job "web" (abc123) crashed (exit 1). Use bgrun_tail with level "error" ...
+```
+
+The fire-and-continue pattern this enables:
+
+```
+bgrun_run(compile, tests)  → returns immediately
+... agent does other work ...
+[notification arrives]     → agent picks up results, no polling
+```
+
+Tracking persists in plugin storage across reloads/restarts; dead sessions
+untrack instead of retrying; the loop only hits the daemon while jobs are
+tracked. Per call, pass `notify: false` to opt out.
+
+## Prompt steering
+
+An append-only prompt hook nudges unmistakable foreground long-runners
+(`sleep N`, `npm run dev`, `cargo run`, bare `docker run`, trailing `&`,
+`tail -f`) toward `bgrun_run`. It never rewrites prompts and skips the
+plugin's own `[bgrun]` messages.
+
+## Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `bgrunPath` | `$BGRUN_BIN` → `PATH` | Binary override |
+| `notify` | `"queue"` | `"queue"` (queued prompt wakes the session), `"synthetic"` (transcript note only), `false` (off by default; per-call `notify: true` still works) |
+| `pollMs` | `5000` | Watcher interval (min 1000) |
+| `steer` | `true` | Prompt-hook steering (`false` to silence) |
+
 ## Develop
 
 ```bash
