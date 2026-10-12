@@ -141,8 +141,16 @@ prompts) work great; cursor-addressed fullscreen apps (`vim`, `htop`,
 `lazygit`) only partly survive. A freshly drawn static view can read fine
 with `strip_ansi` (verified live against `nvim --clean`: tilde column and
 status line legible), but every redraw after an edit comes back garbled, so
-you cannot verify edits that way. For those apps, prefer their
-non-interactive flags or drive the underlying CLI directly.
+you cannot verify edits that way.
+Apps that draw with `\r` and never emit `\n` (lazygit) are invisible to
+`screen`/`tail` entirely — but the whole frame sits in the unflushed buffer,
+so `expect` doubles as a frame reader: match a panel marker (`Files`,
+`Staged changes`) and the returned content is the current UI. Verified live:
+read lazygit's file list, diff hunks, and branch from one match; staged two
+files with `<space>` and confirmed via real `git status`; quit with `q`.
+Frames run ~8KB, so match narrow markers, never dump blindly. For anything
+else in those apps, prefer their non-interactive flags or drive the
+underlying CLI directly.
 
 ## Log reading — token efficient
 
