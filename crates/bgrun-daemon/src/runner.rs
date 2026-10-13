@@ -79,6 +79,17 @@ pub static SCREEN_BUFFERS: LazyLock<tokio::sync::Mutex<HashMap<String, VecDeque<
 pub static UNFLUSHED_PARTIAL: LazyLock<std::sync::Mutex<HashMap<String, Vec<u8>>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// Env vars stripped from every spawned child before user `--env` entries
+/// are applied (explicit user values always win).
+///
+/// These bind a process to the invoker's opencode session. The daemon is
+/// typically started from inside an agent session, so without scrubbing
+/// every child inherits them — and a nested `opencode mini` then resolves
+/// the PARENT's project, chdirs there, and works in the wrong directory
+/// instead of its own `--cwd`. Observed live: a child tasked with an empty
+/// dir wrote into the parent's repo and polluted it with stray files.
+const SCRUBBED_SESSION_ENV: &[&str] = &["OPENCODE_SESSION_ID"];
+
 /// Publish (or clear) a job's unflushed bytes. Lock is held only for the
 /// map operation, never across I/O.
 fn publish_partial(id: &str, partial: &[u8]) {
@@ -201,6 +212,11 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
     child_cmd.stdin(std::process::Stdio::piped());
     child_cmd.stdout(std::process::Stdio::piped());
     child_cmd.stderr(std::process::Stdio::piped());
+    // Drop session-binding vars inherited from the invoker before applying
+    // explicit user env (which wins on conflict).
+    for key in SCRUBBED_SESSION_ENV {
+        child_cmd.env_remove(key);
+    }
     if !args.env.is_empty() {
         child_cmd.envs(&args.env);
     }
@@ -875,6 +891,10 @@ async fn spawn_pty_job(
     }
     if let Some(ref cwd) = args.cwd {
         cmd_builder.cwd(cwd);
+    }
+    // Same session-binding scrub as piped spawn (see SCRUBBED_SESSION_ENV).
+    for key in SCRUBBED_SESSION_ENV {
+        cmd_builder.env_remove(key);
     }
     for (k, v) in &args.env {
         cmd_builder.env(k, v);
@@ -1939,8 +1959,17 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_partial_roundtrip() {
-        // Publishing unflushed reader bytes round-trips through the shared
+    fn test_session_env_scrub_covers_session_binding() {
+        // Guards the nested-agent invariant: a child must never inherit the
+        // invoker's session id (a nested `opencode mini` would otherwise
+        // resolve the parent's project and work in the wrong directory).
+        // The live proof is a spawned `echo [$OPENCODE_SESSION_ID]` coming
+        // back empty; this locks the list against accidental edits.
+        assert!(SCRUBBED_SESSION_ENV.contains(&"OPENCODE_SESSION_ID"));
+    }
+
+    #[test]
+    fn test_publish_partial_roundtrip() {        // Publishing unflushed reader bytes round-trips through the shared
         // map `expect` consults; empty publishes clear the entry.
         publish_partial("test-partial-roundtrip", b"PROMPT> ");
         {
