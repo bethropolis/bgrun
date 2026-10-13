@@ -3,6 +3,19 @@ use std::process::Command;
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     println!("cargo:rerun-if-changed={manifest_dir}/../../.git/HEAD");
+    println!("cargo:rerun-if-env-changed=BGRUN_VERSION");
+
+    // Explicit override wins over git state. Reproducible local builds can
+    // pin a version without tree hacks, and it works under content-keyed
+    // build caches that skip re-running this script when only git metadata
+    // (tags, HEAD) changed but sources did not.
+    if let Ok(version) = std::env::var("BGRUN_VERSION") {
+        let version = version.trim().to_string();
+        if !version.is_empty() {
+            println!("cargo:rustc-env=BGRUN_VERSION={version}");
+            return;
+        }
+    }
 
     let desc = Command::new("git")
         .args(["describe", "--tags", "--dirty", "--always"])
