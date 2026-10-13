@@ -78,6 +78,61 @@ async function withSuggestions(
   }
 }
 
+/// Untrack a job BEFORE a terminating operation, returning a restore hook.
+/// A kill-then-untrack order leaves a window where the poller observes the
+/// terminal state first and queues a notification for your own kill; the
+/// restore hook re-tracks when the operation fails so a still-alive job
+/// keeps its completion notification.
+async function preUntrack(
+  deps: ToolDeps,
+  input: AnyRecord,
+  bin: string,
+  sessionID: string,
+  handle: string,
+): Promise<{ uuid: string; restore: () => Promise<void> }> {
+  const tracker = deps.tracker;
+  const uuid = (await resolveJobId(bin, handle)) ?? handle;
+  await untrackLogged(tracker, uuid, "pre-terminate");
+  const mode = notifyModeFor(deps, input);
+  return {
+    uuid,
+    restore: async () => {
+      if (!mode || !tracker) return;
+      await tracker
+        .track(uuid, {
+          createdAt: Date.now(),
+          label: handle,
+          mode,
+          readyNotified: false,
+          sessionID,
+        })
+        .catch((error) => console.error(`[bgrun] re-track ${uuid} failed: ${error}`));
+    },
+  };
+}
+
+/// UUIDs of jobs currently in a workspace (single list call), for
+/// untracking ahead of a bulk `kill --workspace`.
+async function workspaceJobIds(bin: string, workspace: string): Promise<string[]> {
+  try {
+    const result = await runBgrun(bin, ["list", "--json"]);
+    if (!result.ok) return [];
+    const jobs = parseNdjson(result.stdout);
+    if (!Array.isArray(jobs)) return [];
+    return jobs
+      .filter(
+        (job): job is Record<string, unknown> =>
+          typeof job === "object" &&
+          job !== null &&
+          (job as Record<string, unknown>)["workspace"] === workspace &&
+          typeof (job as Record<string, unknown>)["id"] === "string",
+      )
+      .map((job) => job["id"] as string);
+  } catch {
+    return [];
+  }
+}
+
 async function failWithSuggestions(bin: string, stdout: string, query?: string): Promise<never> {
   throw new Error(await withSuggestions(bin, errorText(stdout), query));
 }
@@ -297,12 +352,25 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         const workspace = str(input["workspace"]);
         const id = str(input["id"]);
         if (!id && !workspace) throw new Error("missing required argument: id (or workspace)");
-        const args = workspace ? ["kill", "--json", "--workspace", workspace, "--force"] : ["kill", "--json", id as string];
+        // Untrack ahead of terminating (see preUntrack): bulk kills resolve
+        // workspace members up front instead.
+        let pre: { uuid: string; restore: () => Promise<void> } | null = null;
+        if (workspace) {
+          for (const uuid of await workspaceJobIds(bin, workspace)) {
+            await untrackLogged(deps.tracker, uuid, "kill-workspace");
+          }
+        } else {
+          pre = await preUntrack(deps, input, bin, context.sessionID, id as string);
+        }
+        const args =
+          workspace && !id
+            ? ["kill", "--json", "--workspace", workspace, "--force"]
+            : ["kill", "--json", (id ?? workspace) as string];
         const result = await runBgrun(bin, args, context.signal);
-        if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        // User-terminated: never notify for your own kill. Resolve to the
-        // UUID first — tracking is keyed by UUID, not by name/prefix.
-        if (id) await untrackLogged(deps.tracker, (await resolveJobId(bin, id)) ?? id, "kill");
+        if (!result.ok) {
+          await pre?.restore();
+          await failWithSuggestions(bin, result.stdout, id);
+        }
         return { content: renderToolText("kill", parseJson(result.stdout)) };
       },
       input: {
@@ -321,13 +389,16 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
       async execute(input, context) {
         const id = str(input["id"]);
         if (!id) throw new Error("missing required argument: id");
+        const pre = await preUntrack(deps, input, bin, context.sessionID, id);
         const result = await runBgrun(
           bin,
           ["stop", "--json", id, ...timeoutArgs("--timeout", num(input["timeout_ms"]), 10_000)],
           context.signal,
         );
-        if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        await untrackLogged(deps.tracker, (await resolveJobId(bin, id)) ?? id, "stop");
+        if (!result.ok) {
+          await pre.restore();
+          await failWithSuggestions(bin, result.stdout, id);
+        }
         return { content: renderToolText("stop", parseJson(result.stdout)) };
       },
       input: {
@@ -346,13 +417,15 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
       async execute(input, context) {
         const id = str(input["id"]);
         if (!id) throw new Error("missing required argument: id");
+        // Old incarnation is terminated by the respawn: untrack up front, no
+        // restore (a failed respawn leaves it dead; the error itself informs).
+        await preUntrack(deps, input, bin, context.sessionID, id);
         const result = await runBgrun(
           bin,
           ["restart", "--json", id, ...timeoutArgs("--timeout", num(input["timeout_ms"]), 10_000)],
           context.signal,
         );
         if (!result.ok) await failWithSuggestions(bin, result.stdout, id);
-        await untrackLogged(deps.tracker, (await resolveJobId(bin, id)) ?? id, "restart");
         const record = parseJson(result.stdout) as AnyRecord;
         await trackSpawn(deps, input, context.sessionID, record);
         return { content: renderToolText("restart", record) };

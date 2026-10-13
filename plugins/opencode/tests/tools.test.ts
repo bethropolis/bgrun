@@ -38,6 +38,80 @@ describe("interactive inputs", () => {
   });
 });
 
+describe("kill/stop untrack-before-terminate", () => {
+  const dir = `/tmp/bgrun-stub-${process.pid}`;
+  const stub = `${dir}/bgrun`;
+  const log = `${dir}/calls.log`;
+
+  async function writeStub(mode: "ok" | "fail-kill"): Promise<void> {
+    await Bun.write(
+      stub,
+      `#!/bin/sh\necho "$@" >> "${log}"\n` +
+        `if [ "$1" = "list" ]; then printf '%s\\n' '{"id":"uuid-1","name":"web","state":"running","workspace":null}'; exit 0; fi\n` +
+        `if [ "$1" = "kill" ]; then\n` +
+        (mode === "ok"
+          ? `  echo '{"killed":["web"]}'; exit 0;\n`
+          : `  echo 'Error: kill: job not found' >&2; exit 1;\n`) +
+        `fi\necho '{}'; exit 0\n`,
+    );
+    await Bun.$`chmod +x ${stub}`.quiet();
+    await Bun.write(log, "");
+  }
+
+  function tracker() {
+    const events: Array<{ kind: string; id: string; at: number }> = [];
+    return {
+      events,
+      deps: {
+        bin: stub,
+        tracker: {
+          defaultMode: "queue" as const,
+          track: async (id: string) => {
+            events.push({ at: Date.now(), id, kind: "track" });
+          },
+          untrack: async (id: string) => {
+            events.push({ at: Date.now(), id, kind: "untrack" });
+          },
+          prune: async () => {},
+        },
+      },
+    };
+  }
+
+  test("kill-by-name untracks the UUID before terminating", async () => {
+    await writeStub("ok");
+    const t = tracker();
+    const tools = bgrunTools(t.deps);
+    await tools
+      .find((tool) => tool.name === "kill")!
+      .execute({ id: "web" }, { sessionID: "ses_test", signal: AbortSignal.timeout(5000) });
+    const untrack = t.events.find((e) => e.kind === "untrack");
+    // Resolved to UUID, not the passed name.
+    expect(untrack?.id).toBe("uuid-1");
+    // Untrack happened before the kill call hit the stub.
+    const calls = (await Bun.file(log).text()).split("\n");
+    const killIdx = calls.findIndex((line) => line.startsWith("kill "));
+    expect(killIdx).toBeGreaterThanOrEqual(0);
+    const killAt = (await Bun.file(log).stat()).mtime.getTime();
+    expect(untrack!.at).toBeLessThanOrEqual(killAt);
+  });
+
+  test("failed kill restores tracking", async () => {
+    await writeStub("fail-kill");
+    const t = tracker();
+    const tools = bgrunTools(t.deps);
+    await expect(
+      tools
+        .find((tool) => tool.name === "kill")!
+        .execute({ id: "web" }, { sessionID: "ses_test", signal: AbortSignal.timeout(5000) }),
+    ).rejects.toThrow();
+    const kinds = t.events.map((e) => e.kind);
+    // untrack first, then re-track when the kill fails.
+    expect(kinds).toEqual(["untrack", "track"]);
+    expect(t.events[1].id).toBe("uuid-1");
+  });
+});
+
 describe("resolveJobIdInList", () => {
   const jobs = [
     { id: "abcdef01-1111", name: "web" },
