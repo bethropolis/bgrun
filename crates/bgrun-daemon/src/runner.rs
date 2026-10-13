@@ -1969,7 +1969,8 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_partial_roundtrip() {        // Publishing unflushed reader bytes round-trips through the shared
+    fn test_publish_partial_roundtrip() {
+        // Publishing unflushed reader bytes round-trips through the shared
         // map `expect` consults; empty publishes clear the entry.
         publish_partial("test-partial-roundtrip", b"PROMPT> ");
         {

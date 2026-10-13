@@ -525,7 +525,8 @@ fn match_line(pattern: &str, expect_re: Option<&regex::Regex>, content: &str) ->
 }
 
 /// Dispatches a command to the appropriate handler.
-async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::Value {    let req_id = request.id;
+async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::Value {
+    let req_id = request.id;
     let cmd_name = format!("{:?}", request.command);
     let audit_args = args_summary(&request.command);
 
@@ -1202,10 +1203,8 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
                     .iter()
                     .map(|line| {
                         if strip_ansi {
-                            String::from_utf8_lossy(&strip_ansi_escapes::strip(
-                                line.as_bytes(),
-                            ))
-                            .into_owned()
+                            String::from_utf8_lossy(&strip_ansi_escapes::strip(line.as_bytes()))
+                                .into_owned()
                         } else {
                             std::string::ToString::to_string(line)
                         }
@@ -1406,7 +1405,8 @@ mod tests {
     use bgrun_core::JobStore;
 
     #[tokio::test]
-    async fn status_for_missing_job_returns_error() {        let request = Request {
+    async fn status_for_missing_job_returns_error() {
+        let request = Request {
             id: "req-1".into(),
             command: Command::Status {
                 id: "missing".into(),
@@ -1528,7 +1528,9 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&job_dir).await;
         tokio::fs::create_dir_all(&job_dir).await.unwrap();
         // Empty log: the prompt exists ONLY as unflushed bytes.
-        tokio::fs::write(job_dir.join("stdout.log"), "").await.unwrap();
+        tokio::fs::write(job_dir.join("stdout.log"), "")
+            .await
+            .unwrap();
 
         let store = Arc::new(Mutex::new(JobStore::new()));
         {
@@ -1560,7 +1562,10 @@ mod tests {
         assert_eq!(response["ok"], true, "response: {response}");
         assert_eq!(response["data"]["matched"], true, "response: {response}");
         // Not a log line yet: null line number, raw partial as content.
-        assert!(response["data"]["line_number"].is_null(), "response: {response}");
+        assert!(
+            response["data"]["line_number"].is_null(),
+            "response: {response}"
+        );
         assert!(
             response["data"]["content"]
                 .as_str()
@@ -1628,7 +1633,10 @@ mod tests {
         )
         .await;
         assert_eq!(raw["ok"], true, "response: {raw}");
-        assert_eq!(raw["data"], serde_json::json!(["\u{1b}[1;35m>>> \u{1b}[0m"]));
+        assert_eq!(
+            raw["data"],
+            serde_json::json!(["\u{1b}[1;35m>>> \u{1b}[0m"])
+        );
 
         runner::SCREEN_BUFFERS.lock().await.remove(id);
     }

@@ -186,6 +186,7 @@ pub enum Command {
     Screen {
         id: String,
         lines: usize,
+        #[serde(default)]
         strip_ansi: bool,
     },
     /// Export (filtered) log history — spanning rotated files — to a file.

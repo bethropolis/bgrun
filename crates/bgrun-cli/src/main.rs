@@ -687,7 +687,11 @@ async fn main() -> Result<()> {
         }) => {
             commands::completions::completions(active_ids, workspaces, shell, man).await?;
         }
-        Some(Commands::Screen { id, lines, strip_ansi }) => {
+        Some(Commands::Screen {
+            id,
+            lines,
+            strip_ansi,
+        }) => {
             commands::screen::screen(id, lines, strip_ansi, json).await?;
         }
         Some(Commands::Clean { workspace, force }) => {
