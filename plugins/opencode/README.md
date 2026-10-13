@@ -5,6 +5,12 @@ hot-reloads `index.ts` on change.
 
 ## Install
 
+Primary method (no registry, tracks a branch):
+
+```bash
+opencode plugin add 'github:bethropolis/bgrun#main::path:plugins/opencode'
+```
+
 Project-local (`opencode.jsonc`):
 
 ```jsonc
