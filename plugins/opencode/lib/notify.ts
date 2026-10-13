@@ -27,13 +27,25 @@ export interface TrackedJob {
   createdAt: number;
 }
 
+/// Persisted watcher state (single storage key). Receipts make delivery
+/// exactly-once across plugin INSTANCES: OpenCode loads one plugin instance
+/// per location, so N locations mean N watchers sharing this blob — without
+/// receipts every instance would queue its own copy of each notification.
+export interface PersistedWatcherState {
+  tracked: Record<string, TrackedJob>;
+  /** `notified.<jobId>.<ready|terminal>` → epoch ms of delivery. */
+  receipts: Record<string, number>;
+}
+
+const RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface WatcherDeps {
   bin: string;
   pollMs: number;
   listJobs: () => Promise<Map<string, Record<string, any>>>;
   notify: (sessionID: string, text: string, mode: NotifyMode) => Promise<void>;
-  load: () => Promise<Record<string, TrackedJob>>;
-  save: (tracked: Record<string, TrackedJob>) => Promise<void>;
+  load: () => Promise<PersistedWatcherState>;
+  save: (state: PersistedWatcherState) => Promise<void>;
 }
 
 const TERMINAL_STATES = new Set(["exited", "crashed", "killed"]);
@@ -78,6 +90,7 @@ export function decideNotification(
 
 export class JobWatcher {
   private tracked = new Map<string, TrackedJob>();
+  private receipts = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private loaded = false;
   private readonly deps: WatcherDeps;
@@ -90,8 +103,16 @@ export class JobWatcher {
   async restore(): Promise<void> {
     try {
       const saved = await this.deps.load();
-      for (const [id, entry] of Object.entries(saved)) {
+      // Migrate the pre-receipt shape (bare tracked map).
+      const state: PersistedWatcherState =
+        saved && typeof saved === "object" && "tracked" in saved
+          ? (saved as PersistedWatcherState)
+          : { tracked: (saved ?? {}) as Record<string, TrackedJob>, receipts: {} };
+      for (const [id, entry] of Object.entries(state.tracked ?? {})) {
         if (entry && typeof entry.sessionID === "string") this.tracked.set(id, entry);
+      }
+      for (const [key, at] of Object.entries(state.receipts ?? {})) {
+        if (typeof at === "number") this.receipts.set(key, at);
       }
     } catch {
       // Corrupt storage must never break plugin setup.
@@ -145,7 +166,11 @@ export class JobWatcher {
     if (changed) await this.persist();
   }
 
-  /** One poll cycle: notify sessions, untrack finished jobs. Public for tests. */
+  /** One poll cycle: notify sessions exactly once per outcome, even with
+   * several watcher instances sharing storage. The claim sequence per
+   * outcome is receipt-check → jitter → re-check → claim → persist →
+   * deliver, so two instances racing the same outcome collapse to one
+   * delivery. Public for tests. */
   async poll(): Promise<void> {
     if (this.tracked.size === 0) return;
     let jobs: Map<string, Record<string, any>>;
@@ -155,6 +180,7 @@ export class JobWatcher {
       console.error(`[bgrun] watcher list failed: ${error}`);
       return;
     }
+    this.refreshReceipts();
     let changed = false;
     for (const [id, entry] of [...this.tracked]) {
       const record = jobs.get(id);
@@ -166,11 +192,27 @@ export class JobWatcher {
       }
       const decision = decideNotification(id, record, entry);
       if (!decision) continue;
-      // Commit state BEFORE delivering: a plugin reload (hot reload during
-      // dev fires constantly) between delivery and persist would otherwise
-      // restore the pre-notify map and queue the same outcome twice. A
-      // failed delivery to a dead session is pointless anyway; transient
-      // failures are logged below.
+      const kind = decision.done ? "terminal" : "ready";
+      const receipt = `notified.${id}.${kind}`;
+      if (this.receipts.has(receipt)) {
+        // Another instance (or a pre-reload self) already delivered this.
+        if (decision.done) this.tracked.delete(id);
+        else if (decision.markReady) entry.readyNotified = true;
+        changed = true;
+        continue;
+      }
+      // Jitter before claiming: simultaneous instances spread their claims.
+      await new Promise((resolve) => setTimeout(resolve, Math.random() * 300));
+      await this.refreshReceipts();
+      if (this.receipts.has(receipt)) {
+        if (decision.done) this.tracked.delete(id);
+        else if (decision.markReady) entry.readyNotified = true;
+        changed = true;
+        continue;
+      }
+      // Commit claim BEFORE delivering: a reload between delivery and
+      // persist must never resurrect a delivered notification.
+      this.receipts.set(receipt, Date.now());
       if (decision.done) {
         this.tracked.delete(id);
       } else if (decision.markReady) {
@@ -180,20 +222,43 @@ export class JobWatcher {
       await this.persist();
       try {
         await this.deps.notify(entry.sessionID, decision.text, entry.mode);
-        console.info(`[bgrun] notified ${entry.sessionID} about job ${id}`);
       } catch (error) {
-        // Session is gone (deleted/expired): entry is already dropped above,
-        // so there is nothing to retry — just record the loss.
+        // Delivery failed (blocked/deleted session): the outcome stays
+        // claimed — redelivering into a void helps nobody.
         console.error(`[bgrun] notify ${entry.sessionID} about job ${id} failed: ${error}`);
       }
     }
     if (changed) await this.persist();
   }
 
+  /** Re-read receipts (another instance may have claimed) and drop expired. */
+  private async refreshReceipts(): Promise<void> {
+    try {
+      const saved = await this.deps.load();
+      const receipts =
+        saved && typeof saved === "object" && "receipts" in saved
+          ? (saved as PersistedWatcherState).receipts ?? {}
+          : {};
+      const now = Date.now();
+      for (const [key, at] of Object.entries(receipts)) {
+        if (typeof at === "number" && now - at < RECEIPT_TTL_MS) this.receipts.set(key, at);
+      }
+    } catch {
+      // Storage hiccup: proceed with in-memory receipts.
+    }
+    const now = Date.now();
+    for (const [key, at] of [...this.receipts]) {
+      if (now - at >= RECEIPT_TTL_MS) this.receipts.delete(key);
+    }
+  }
+
   private async persist(): Promise<void> {
     if (!this.loaded) return;
     try {
-      await this.deps.save(Object.fromEntries(this.tracked));
+      await this.deps.save({
+        receipts: Object.fromEntries(this.receipts),
+        tracked: Object.fromEntries(this.tracked),
+      });
     } catch (error) {
       console.error(`[bgrun] watcher persist failed: ${error}`);
     }

@@ -26,7 +26,7 @@
 
 import { Plugin } from "@opencode/plugin";
 import { bgrunBin, parseNdjson, runBgrun } from "./lib/exec.ts";
-import { JobWatcher, type NotifyMode, type TrackedJob } from "./lib/notify.ts";
+import { JobWatcher, type NotifyMode, type PersistedWatcherState } from "./lib/notify.ts";
 import { bgrunTools } from "./lib/tools.ts";
 
 const SKILL_ID = "bgrun";
@@ -107,9 +107,9 @@ export default Plugin.define({
       load: async () => {
         const saved = (await ctx.storage.get(TRACKED_KEY)) as unknown;
         if (saved && typeof saved === "object" && !Array.isArray(saved)) {
-          return saved as Record<string, TrackedJob>;
+          return saved as PersistedWatcherState;
         }
-        return {};
+        return { tracked: {}, receipts: {} };
       },
       save: async (tracked) => {
         // TrackedJob is plain JSON at runtime; the double cast bridges the

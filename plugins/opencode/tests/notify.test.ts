@@ -3,6 +3,7 @@ import {
   JobWatcher,
   decideNotification,
   type NotifyMode,
+  type PersistedWatcherState,
   type TrackedJob,
   type WatcherDeps,
 } from "../lib/notify.ts";
@@ -63,7 +64,7 @@ describe("decideNotification", () => {
 interface Harness {
   jobs: Map<string, Record<string, any>>;
   notified: Array<{ sessionID: string; text: string; mode: NotifyMode }>;
-  saved: Array<Record<string, TrackedJob>>;
+  saved: Array<PersistedWatcherState>;
   notifyFails: boolean;
   watcher: JobWatcher;
 }
@@ -77,14 +78,14 @@ function harness(): Harness {
   const deps: WatcherDeps = {
     bin: "bgrun",
     listJobs: async () => new Map(h.jobs),
-    load: async () => ({}),
+    load: async () => ({ tracked: {}, receipts: {} }),
     notify: async (sessionID, text, mode) => {
       if (h.notifyFails) throw new Error("session gone");
       h.notified.push({ mode, sessionID, text });
     },
     pollMs: 50,
-    save: async (tracked) => {
-      h.saved.push(structuredClone(tracked));
+    save: async (state) => {
+      h.saved.push(structuredClone(state));
     },
   };
   h.watcher = new JobWatcher(deps);
@@ -161,9 +162,43 @@ describe("JobWatcher", () => {
 
   test("restore reloads persisted tracking", async () => {
     const h = harness();
-    (h.watcher as any).deps.load = async () => ({ abc: entry() });
+    (h.watcher as any).deps.load = async () => ({ tracked: { abc: entry() }, receipts: {} });
     await h.watcher.restore();
     expect(h.watcher.size).toBe(1);
+  });
+
+  test("two instances sharing storage deliver exactly once", async () => {
+    // The production failure: OpenCode loads one plugin instance per
+    // location, and every instance restores the same tracked map. Without
+    // receipts each instance queues its own copy of every notification.
+    const shared: { state: PersistedWatcherState } = {
+      state: { tracked: { abc: entry() }, receipts: {} },
+    };
+    const notified: string[] = [];
+    const makeDeps = (): WatcherDeps => ({
+      bin: "bgrun",
+      listJobs: async () =>
+        new Map([["abc", { id: "abc", name: "web", state: "exited" }]]),
+      load: async () => structuredClone(shared.state),
+      notify: async (_sessionID, text) => {
+        notified.push(text);
+      },
+      pollMs: 50,
+      save: async (state) => {
+        shared.state = structuredClone(state);
+      },
+    });
+    const a = new JobWatcher(makeDeps());
+    const b = new JobWatcher(makeDeps());
+    await a.restore();
+    await b.restore();
+    // Interleaved polls, as two 5s-interval instances would run them.
+    await a.poll();
+    await b.poll();
+    await a.poll();
+    expect(notified).toHaveLength(1);
+    expect(shared.state.tracked).toEqual({});
+    expect(Object.keys(shared.state.receipts)).toEqual(["notified.abc.terminal"]);
   });
 
   test("untrack and prune drop entries and persist", async () => {
