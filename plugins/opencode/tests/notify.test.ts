@@ -134,6 +134,20 @@ describe("JobWatcher", () => {
     expect(h.watcher.size).toBe(0);
   });
 
+  test("failed ready delivery marks notified so reloads never duplicate", async () => {
+    const h = harness();
+    h.notifyFails = true;
+    await h.watcher.restore();
+    await h.watcher.track("abc", entry());
+    h.jobs.set("abc", { id: "abc", state: "ready" });
+    await h.watcher.poll();
+    // Entry retained (job still running) but marked: the next poll must not
+    // attempt delivery again.
+    expect(h.watcher.size).toBe(1);
+    await h.watcher.poll();
+    expect(h.notified).toHaveLength(0);
+  });
+
   test("empty tracker never lists", async () => {
     const h = harness();
     let listed = false;

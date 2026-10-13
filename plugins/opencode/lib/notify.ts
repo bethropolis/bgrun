@@ -166,20 +166,26 @@ export class JobWatcher {
       }
       const decision = decideNotification(id, record, entry);
       if (!decision) continue;
-      try {
-        await this.deps.notify(entry.sessionID, decision.text, entry.mode);
-      } catch {
-        // Session is gone (deleted/expired): stop tracking, keep the error.
-        this.tracked.delete(id);
-        changed = true;
-        continue;
-      }
+      // Commit state BEFORE delivering: a plugin reload (hot reload during
+      // dev fires constantly) between delivery and persist would otherwise
+      // restore the pre-notify map and queue the same outcome twice. A
+      // failed delivery to a dead session is pointless anyway; transient
+      // failures are logged below.
       if (decision.done) {
         this.tracked.delete(id);
       } else if (decision.markReady) {
         entry.readyNotified = true;
       }
       changed = true;
+      await this.persist();
+      try {
+        await this.deps.notify(entry.sessionID, decision.text, entry.mode);
+        console.info(`[bgrun] notified ${entry.sessionID} about job ${id}`);
+      } catch (error) {
+        // Session is gone (deleted/expired): entry is already dropped above,
+        // so there is nothing to retry — just record the loss.
+        console.error(`[bgrun] notify ${entry.sessionID} about job ${id} failed: ${error}`);
+      }
     }
     if (changed) await this.persist();
   }
