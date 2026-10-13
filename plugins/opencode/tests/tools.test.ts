@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bgrunTools, resolveJobIdInList } from "../lib/tools.ts";
+import { bgrunTools, resolveJobIdInList, resolveJobIdsInList } from "../lib/tools.ts";
 
 const EXPECTED_TOOLS = [
   "run",
@@ -128,6 +128,18 @@ describe("resolveJobIdInList", () => {
     expect(resolveJobIdInList(jobs, "nope")).toBeUndefined();
     expect(resolveJobIdInList(jobs, "abc")).toBeUndefined(); // too short
     expect(resolveJobIdInList({ not: "array" }, "web")).toBeUndefined();
+  });
+
+  test("plural resolution returns every same-named UUID", () => {
+    const jobs = [
+      { id: "dead-beef-1", name: "api", state: "killed" },
+      { id: "dead-beef-2", name: "api", state: "running" },
+    ];
+    // Kill-by-name must untrack both: the daemon kills newest-first and any
+    // of them may be the victim, while stale records keep their names.
+    expect(resolveJobIdsInList(jobs, "api")).toEqual(["dead-beef-1", "dead-beef-2"]);
+    expect(resolveJobIdInList(jobs, "api")).toBe("dead-beef-1");
+    expect(resolveJobIdsInList(jobs, "dead-beef-2")).toEqual(["dead-beef-2"]);
   });
 });
 

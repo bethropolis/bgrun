@@ -89,24 +89,29 @@ async function preUntrack(
   bin: string,
   sessionID: string,
   handle: string,
-): Promise<{ uuid: string; restore: () => Promise<void> }> {
+): Promise<{ uuids: string[]; restore: () => Promise<void> }> {
   const tracker = deps.tracker;
-  const uuid = (await resolveJobId(bin, handle)) ?? handle;
-  await untrackLogged(tracker, uuid, "pre-terminate");
+  const resolved = await resolveJobIds(bin, handle);
+  const uuids = resolved.length > 0 ? resolved : [handle];
+  for (const uuid of uuids) {
+    await untrackLogged(tracker, uuid, "pre-terminate");
+  }
   const mode = notifyModeFor(deps, input);
   return {
-    uuid,
+    uuids,
     restore: async () => {
       if (!mode || !tracker) return;
-      await tracker
-        .track(uuid, {
-          createdAt: Date.now(),
-          label: handle,
-          mode,
-          readyNotified: false,
-          sessionID,
-        })
-        .catch((error) => console.error(`[bgrun] re-track ${uuid} failed: ${error}`));
+      for (const uuid of uuids) {
+        await tracker
+          .track(uuid, {
+            createdAt: Date.now(),
+            label: handle,
+            mode,
+            readyNotified: false,
+            sessionID,
+          })
+          .catch((error) => console.error(`[bgrun] re-track ${uuid} failed: ${error}`));
+      }
     },
   };
 }
@@ -142,29 +147,47 @@ async function failWithSuggestions(bin: string, stdout: string, query?: string):
 /// but tracking is keyed by UUID, so kill/stop/restart must resolve before
 /// untracking — otherwise the entry leaks and a dead job notifies later.
 export function resolveJobIdInList(jobs: unknown, handle: string): string | undefined {
-  if (!Array.isArray(jobs) || handle.length === 0) return undefined;
+  return resolveJobIdsInList(jobs, handle)[0];
+}
+
+/// All UUIDs a handle can mean. Exact UUID and unique prefix resolve singly;
+/// a NAME can match several records at once (stale dead jobs keep their
+/// names until cleaned), so every same-named UUID is returned — untracking
+/// is idempotent and the daemon kills newest-first, meaning any of them may
+/// be the victim.
+export function resolveJobIdsInList(jobs: unknown, handle: string): string[] {
+  if (!Array.isArray(jobs) || handle.length === 0) return [];
+  const named: string[] = [];
   let prefix: string | undefined;
+  let prefixAmbiguous = false;
   for (const entry of jobs) {
     if (typeof entry !== "object" || entry === null) continue;
     const record = entry as Record<string, unknown>;
     const id = typeof record["id"] === "string" ? (record["id"] as string) : "";
     const name = typeof record["name"] === "string" ? (record["name"] as string) : "";
-    if (id === handle || name === handle) return id;
+    if (id === handle) return [id];
+    if (name === handle && id !== "") named.push(id);
     if (handle.length >= 4 && id.startsWith(handle)) {
-      if (prefix !== undefined) return undefined; // ambiguous
+      if (prefix !== undefined) prefixAmbiguous = true;
       prefix = id;
     }
   }
-  return prefix;
+  if (named.length > 0) return named;
+  if (prefix !== undefined && !prefixAmbiguous) return [prefix];
+  return [];
 }
 
 async function resolveJobId(bin: string, handle: string): Promise<string | undefined> {
+  return (await resolveJobIds(bin, handle))[0];
+}
+
+async function resolveJobIds(bin: string, handle: string): Promise<string[]> {
   try {
     const result = await runBgrun(bin, ["list", "--json"]);
-    if (!result.ok) return undefined;
-    return resolveJobIdInList(parseNdjson(result.stdout), handle);
+    if (!result.ok) return [];
+    return resolveJobIdsInList(parseNdjson(result.stdout), handle);
   } catch {
-    return undefined;
+    return [];
   }
 }
 
@@ -354,7 +377,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         if (!id && !workspace) throw new Error("missing required argument: id (or workspace)");
         // Untrack ahead of terminating (see preUntrack): bulk kills resolve
         // workspace members up front instead.
-        let pre: { uuid: string; restore: () => Promise<void> } | null = null;
+        let pre: { uuids: string[]; restore: () => Promise<void> } | null = null;
         if (workspace) {
           for (const uuid of await workspaceJobIds(bin, workspace)) {
             await untrackLogged(deps.tracker, uuid, "kill-workspace");
