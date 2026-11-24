@@ -29,6 +29,7 @@ describe("interactive inputs", () => {
     expect(run.input.properties.pty_rows).toBeDefined();
     expect(run.input.properties.notify).toBeDefined();
     expect(run.description).toContain("pty");
+    expect(run.input.properties.pty.description).toContain("default true");
     const screen = tools.find((t) => t.name === "screen")!;
     expect(screen.input.properties.strip_ansi).toBeDefined();
     const send = tools.find((t) => t.name === "send")!;

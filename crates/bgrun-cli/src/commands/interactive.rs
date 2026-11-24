@@ -405,7 +405,7 @@ async fn start_job_flow(workspace: Option<String>) -> Result<()> {
         ready_when_url: None,
         ready_when_file: None,
         after: None,
-        pty: false,
+        pty: None,
         restart: None,
         backoff: None,
         max_retries: None,

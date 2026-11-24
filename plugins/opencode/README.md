@@ -69,8 +69,9 @@ tracked. Per call, pass `notify: false` to opt out.
 
 ## Interactive sessions (PTY)
 
-`run` with `pty: true` (+ optional `pty_cols`/`pty_rows`), then loop
-`expect` → `screen` → `send`. `expect` matches prompts the instant they
+`run` defaults to `pty: true` (+ optional `pty_cols`/`pty_rows`); pass
+`pty: false` for piped mode, then loop `expect` → `screen` → `send`.
+`expect` matches prompts the instant they
 print (even mid-line); `screen` takes `strip_ansi: true` for clean reads;
 `send` takes raw bytes (`\n` Enter, `\x1b` Esc, `\x1b[A` arrows, `\x03`
 Ctrl+C). Full playbook with key table: `docs/bgrun/SKILL.md`

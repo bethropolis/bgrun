@@ -17,7 +17,9 @@ pub struct RunFlags {
     pub ready_when_url: Option<String>,
     pub ready_when_file: Option<String>,
     pub after: Option<String>,
-    pub pty: bool,
+    /// `Some(true)`/`Some(false)` from an explicit `--pty`/`--piped`;
+    /// `None` lets `bgrun.toml` or the PTY-by-default rule decide.
+    pub pty: Option<bool>,
     pub sandbox: bool,
     pub restart: Option<String>,
     pub backoff: Option<String>,
@@ -94,10 +96,18 @@ pub async fn run(
         }
         flags.after = flags.after.or(resolved.after.clone());
         flags.cwd = flags.cwd.or_else(|| resolved.cwd.clone());
-        flags.pty = flags.pty || resolved.pty;
         flags.sandbox = flags.sandbox || resolved.sandbox;
         resolved_args = Some(resolved);
     }
+
+    // Explicit --pty/--piped win, then sandbox, then bgrun.toml, then the
+    // PTY-by-default rule.
+    let effective_pty = resolve_pty(
+        flags.pty,
+        flags.sandbox,
+        resolved_args.as_ref().map(|r| r.pty),
+    )?;
+    flags.pty = Some(effective_pty);
 
     // Single-element strings that didn't match a config job: run via shell
     if cmd.len() == 1 {
@@ -204,9 +214,6 @@ pub async fn run(
     // (Flag fields were partially moved by the chains above, so inspect the
     // resolved strategies here.)
     if flags.sandbox {
-        if flags.pty {
-            anyhow::bail!("--sandbox requires piped mode and cannot be combined with --pty");
-        }
         if matches!(
             readiness,
             Some(ReadinessStrategy::TcpPort(_) | ReadinessStrategy::HttpPoll(_))
@@ -239,7 +246,7 @@ pub async fn run(
         cpu_quota: flags.cpu_quota,
         pids_max: flags.pids_max,
         sandbox: flags.sandbox,
-        pty: flags.pty,
+        pty: effective_pty,
         max_runtime_ms: flags.max_runtime_ms,
         env,
         after: flags.after,
@@ -368,6 +375,19 @@ fn print_wait_result(job_id: &str, result: &bgrun_proto::WaitResult, json: bool)
     Ok(())
 }
 
+/// Resolves the effective PTY mode. Explicit flags win; sandbox always selects
+/// piped mode; otherwise `bgrun.toml` decides, defaulting to PTY.
+fn resolve_pty(explicit: Option<bool>, sandbox: bool, configured: Option<bool>) -> Result<bool> {
+    match explicit {
+        Some(true) if sandbox => {
+            anyhow::bail!("--sandbox requires piped mode and cannot be combined with --pty")
+        }
+        Some(mode) => Ok(mode),
+        None if sandbox => Ok(false),
+        None => Ok(configured.unwrap_or(true)),
+    }
+}
+
 /// Tries to find and parse a bgrun.toml, returning resolved `RunArgs` if the name matches.
 async fn try_resolve_from_config(name: &str) -> Option<bgrun_proto::RunArgs> {
     let config_path = find_config(std::env::current_dir().ok()?).await?;
@@ -390,5 +410,34 @@ async fn find_config(start: std::path::PathBuf) -> Option<std::path::PathBuf> {
             return None;
         }
         current = current.parent()?.to_path_buf();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_pty;
+
+    #[test]
+    fn pty_defaults_to_true() {
+        assert!(resolve_pty(None, false, None).unwrap());
+    }
+
+    #[test]
+    fn sandbox_and_piped_select_piped_mode() {
+        assert!(!resolve_pty(None, true, None).unwrap());
+        assert!(!resolve_pty(Some(false), false, Some(true)).unwrap());
+    }
+
+    #[test]
+    fn explicit_pty_with_sandbox_is_rejected() {
+        assert!(resolve_pty(Some(true), true, None).is_err());
+    }
+
+    #[test]
+    fn config_value_is_honoured() {
+        assert!(!resolve_pty(None, false, Some(false)).unwrap());
+        assert!(resolve_pty(None, false, Some(true)).unwrap());
+        // Explicit flags still beat a config value.
+        assert!(resolve_pty(Some(true), false, Some(false)).unwrap());
     }
 }

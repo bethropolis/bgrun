@@ -48,7 +48,7 @@ restart = "on-crash"
 | `sandbox` | bool | Isolate the job in new network + IPC namespaces (Linux only, piped mode). See `--sandbox`. |
 | `workspace` | string | Group jobs for batch operations (`bgrun list --workspace`, `bgrun kill --workspace`). |
 | `after` | string | Name of another job that must reach `Ready` (or exit) before this one starts. 120s timeout. |
-| `pty` | bool | Allocate a pseudo-terminal for the child process. |
+| `pty` | bool | Allocate a pseudo-terminal (default true; automatically false when `sandbox = true`). Setting `pty = true` with `sandbox = true` is an error. |
 | `max-rss-mb` | integer | Kill the job if its RSS exceeds this value (MB). |
 | `max-runtime-ms` | integer | Kill the job after this many milliseconds. |
 | `backoff-ms` | integer | Base backoff in ms for restart delay (default: 2000). Doubles each consecutive failure, capped at 5 min. |
@@ -59,8 +59,8 @@ restart = "on-crash"
 | `health-check-port` | integer | Probe this TCP port periodically after ready for liveness. |
 | `health-interval-secs` | integer | Seconds between health checks (default: 10). |
 | `health-threshold` | integer | Consecutive failures before killing (default: 3). |
-| `cols` | integer | PTY width in columns (default: 80, only with `pty = true`). |
-| `rows` | integer | PTY height in rows (default: 24, only with `pty = true`). |
+| `cols` | integer | PTY width in columns (PTY only, default: 80). |
+| `rows` | integer | PTY height in rows (PTY only, default: 24). |
 
 A maximum of one readiness strategy can be configured. If multiple are specified, the CLI picks the first one found in order: `ready-when`, `ready-when-port`, `ready-when-url`, `ready-when-file`.
 

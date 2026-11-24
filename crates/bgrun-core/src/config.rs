@@ -216,6 +216,17 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         )));
     }
 
+    let sandbox = job.sandbox.unwrap_or(false);
+    let pty = match job.pty {
+        Some(true) if sandbox => {
+            return Err(Error::ParseError(format!(
+                "job '{name}': sandbox = true cannot be combined with pty = true"
+            )));
+        }
+        Some(explicit) => explicit,
+        None => !sandbox,
+    };
+
     Ok(RunArgs {
         cmd,
         name: Some(name.into()),
@@ -228,8 +239,8 @@ pub fn resolve_job_args(name: &str, config: &BgrunToml) -> Result<RunArgs, Error
         memory_max,
         cpu_quota: job.cpu_quota,
         pids_max: job.pids_max,
-        sandbox: job.sandbox.unwrap_or(false),
-        pty: job.pty.unwrap_or(false),
+        sandbox,
+        pty,
         max_runtime_ms: job.max_runtime_ms,
         max_rss_mb: job.max_rss_mb,
         env: job.env.clone().unwrap_or_default(),
@@ -397,6 +408,7 @@ sandbox = true
         assert_eq!(args.cpu_quota, Some(50));
         assert_eq!(args.pids_max, Some(64));
         assert!(args.sandbox);
+        assert!(!args.pty, "sandboxed jobs must be piped");
     }
 
     #[test]
@@ -473,6 +485,39 @@ ready-when-regex = "listening on :\\d+"
                 "listening on :\\d+".into()
             ))
         );
+    }
+
+    #[test]
+    fn test_pty_defaults_to_true_unless_sandboxed() {
+        let config = parse_config("[jobs.a]\ncmd = \"true\"\n").unwrap();
+        let args = resolve_job_args("a", &config).unwrap();
+        assert!(args.pty);
+        assert!(!args.sandbox);
+
+        let config = parse_config("[jobs.a]\ncmd = \"true\"\nsandbox = true\n").unwrap();
+        let args = resolve_job_args("a", &config).unwrap();
+        assert!(!args.pty);
+    }
+
+    #[test]
+    fn test_explicit_pty_and_sandbox_conflict() {
+        let config =
+            parse_config("[jobs.a]\ncmd = \"true\"\npty = true\nsandbox = true\n").unwrap();
+        let err = resolve_job_args("a", &config).unwrap_err();
+        assert!(
+            matches!(err, Error::ParseError(ref msg) if msg.contains("sandbox") && msg.contains("pty")),
+            "unexpected error: {err}"
+        );
+
+        let config =
+            parse_config("[jobs.a]\ncmd = \"true\"\npty = false\nsandbox = true\n").unwrap();
+        assert!(!resolve_job_args("a", &config).unwrap().pty);
+    }
+
+    #[test]
+    fn test_explicit_pty_false_is_honoured() {
+        let config = parse_config("[jobs.a]\ncmd = \"true\"\npty = false\n").unwrap();
+        assert!(!resolve_job_args("a", &config).unwrap().pty);
     }
 
     #[test]

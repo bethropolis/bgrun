@@ -69,9 +69,13 @@ enum Commands {
         #[arg(long)]
         after: Option<String>,
 
-        /// Allocate a pseudo-terminal for the child process
+        /// Allocate a pseudo-terminal (default; kept for compatibility)
         #[arg(long)]
         pty: bool,
+
+        /// Run with piped stdout/stderr instead of a PTY
+        #[arg(long, alias = "no-pty", conflicts_with = "pty")]
+        piped: bool,
 
         /// Restart policy: "never", "on-crash", "on-failure", "always"
         #[arg(long)]
@@ -482,6 +486,7 @@ async fn main() -> Result<()> {
             ready_when_file,
             after,
             pty,
+            piped,
             restart,
             backoff,
             max_retries,
@@ -517,7 +522,13 @@ async fn main() -> Result<()> {
                 ready_when_url,
                 ready_when_file,
                 after,
-                pty,
+                pty: if piped {
+                    Some(false)
+                } else if pty {
+                    Some(true)
+                } else {
+                    None
+                },
                 restart,
                 backoff,
                 max_retries,

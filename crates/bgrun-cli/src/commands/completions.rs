@@ -113,7 +113,9 @@ complete -c bgrun -n "__fish_seen_subcommand_from run" -l ready-when-port -d "TC
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l ready-when-url -d "HTTP URL readiness"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l ready-when-file -d "File existence readiness"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l after -d "Start after a named job"
-complete -c bgrun -n "__fish_seen_subcommand_from run" -l pty -d "Allocate a PTY for the child"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l pty -d "Allocate a PTY for the child (default)"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l piped -d "Run with piped stdout/stderr (no PTY)"
+complete -c bgrun -n "__fish_seen_subcommand_from run" -l no-pty -d "Alias for --piped"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l restart -d "Restart policy (never/on-crash/on-failure/always)"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l backoff -d "Backoff duration"
 complete -c bgrun -n "__fish_seen_subcommand_from run" -l max-retries -d "Max consecutive restart attempts"
@@ -226,7 +228,7 @@ _bgrun()
             esac
             ;;
         run)
-            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --restart --backoff --max-retries --log-max-size --log-keep --memory-max --cpu-quota --pids-max --sandbox --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
+            local opts="--name --workspace --ready-when --ready-when-regex --ready-when-port --ready-when-url --ready-when-file --after --pty --piped --no-pty --restart --backoff --max-retries --log-max-size --log-keep --memory-max --cpu-quota --pids-max --sandbox --cols --rows --max-rss --max-runtime --allocate-port --health-check-url --health-check-port --health-interval --health-threshold --env --cwd --replace --wait --wait-timeout"
             COMPREPLY=($(compgen -W "$opts" -- "$cur"))
             ;;
         stop|restart)
@@ -310,7 +312,9 @@ _bgrun() {
                         '--ready-when-url=[HTTP URL readiness]:url:' \
                         '--ready-when-file=[File existence readiness]:file:' \
                         '--after=[Start after a named job]:name:' \
-                        '--pty[Allocate a PTY]' \
+                        '--pty[Allocate a PTY (default)]' \
+                        '--piped[Run with piped stdout/stderr (no PTY)]' \
+                        '--no-pty[Alias for --piped]' \
                         '--restart=[Restart policy]:policy:(never on-crash on-failure always)' \
                         '--backoff=[Backoff duration]:duration:' \
                         '--max-retries=[Max consecutive restart attempts]:count:' \

@@ -26,7 +26,8 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--ready-when-url <URL>` | Mark job `Ready` when GET returns HTTP 2xx |
 | `--ready-when-file <PATH>` | Mark job `Ready` when file exists |
 | `--after <NAME>` | Wait for named job to reach `Ready` (or `Exited`/`Crashed`) before spawning |
-| `--pty` | Allocate a pseudo-terminal (useful for processes that buffer output differently with pipes). The PTY is allocated by bgrun's `portable-pty` library. **Known limitation:** programs that open their own PTY (e.g. `podman exec -it`, `ssh`, `docker attach`) may not work with `--pty` because the child's PTY is consumed by the inner command rather than bgrun's PTY master. |
+| `--pty` | Kept for backwards compatibility — PTY is now the default for all jobs, so this flag is a no-op (still accepted). The PTY is allocated by bgrun's `portable-pty` library. **Known limitation:** programs that open their own PTY (e.g. `podman exec -it`, `ssh`, `docker attach`) may not work with `--pty` because the child's PTY is consumed by the inner command rather than bgrun's PTY master. |
+| `--piped` / `--no-pty` | Run with piped stdout/stderr instead of a PTY (conflicts with `--pty`; automatically selected by `--sandbox`). |
 | `--restart <POLICY>` | Restart policy: `never`, `on-crash` (non-zero exit / signal death), `on-failure` (also clean exits that never became `Ready`), `always` (any exit except an explicit kill). An explicit `kill` always wins. |
 | `--backoff <DURATION>` | Base delay between restart attempts, e.g. `2s`, `5m`, `500ms` (default: `2s`, only with `--restart`). Doubles per consecutive failure, capped at 5 min. |
 | `--max-retries <N>` | Give up after N consecutive restart attempts (docker-style max-retries; `0` = never restart). Counter resets after a healthy run (>10s). Unset = retry forever. |
@@ -35,11 +36,11 @@ bgrun run [OPTIONS] <cmd> [args...]
 | `--memory-max <SIZE>` | Hard memory cap via cgroups v2, e.g. `512M` (Linux only; fails the run if unenforceable) |
 | `--cpu-quota <PCT>` | CPU quota as percent of one CPU, e.g. `50` = half a CPU, `200` = two CPUs (Linux only) |
 | `--pids-max <N>` | Cap tasks (processes + threads) in the job's cgroup (Linux only) |
-| `--sandbox` | Isolate the job in new network + IPC namespaces (Linux only, piped mode). Rootless jobs additionally enter a user namespace with a self UID/GID map. The job sees loopback only — incompatible with `--pty`, network readiness/health checks, and `--allocate-port` (rejected client-side) |
+| `--sandbox` | Isolate the job in new network + IPC namespaces (Linux only; piped mode is automatic). Rootless jobs additionally enter a user namespace with a self UID/GID map. The job sees loopback only — incompatible with `--pty`, network readiness/health checks, and `--allocate-port` (rejected client-side) |
 | `--max-rss <MB>` | Kill the job if resident memory exceeds this threshold (checked every 1s) |
 | `--max-runtime <D>` | Kill the job after this duration (e.g. `30s`, `5m`) |
-| `--cols <N>` | PTY width in columns (default: 80, only with `--pty`) |
-| `--rows <N>` | PTY height in rows (default: 24, only with `--pty`) |
+| `--cols <N>` | PTY width in columns — PTY only (default), 80 by default |
+| `--rows <N>` | PTY height in rows — PTY only (default), 24 by default |
 | `--allocate-port <NAME>` | Allocate a free TCP port and set it as the environment variable `<NAME>` |
 | `--health-check-url <URL>` | Poll an HTTP URL periodically for liveness after ready |
 | `--health-check-port <PORT>` | Probe a TCP port periodically for liveness after ready |
@@ -75,8 +76,11 @@ bgrun run --name worker --restart on-failure --max-retries 3 --backoff 5s "pytho
 # Depends on another job
 bgrun run --name tests --after server "cargo test"
 
-# PTY allocation
-bgrun run --pty "npm run dev"
+# PTY allocation (the default)
+bgrun run "npm run dev"
+
+# Piped stdout/stderr (opt out of PTY)
+bgrun run --piped "npm run dev"
 ```
 
 **Output** (JSON)
@@ -470,7 +474,7 @@ bgrun send server $'yes\n'
 {"ok":true}
 ```
 
-Works with both piped and `--pty` jobs.
+Works with both PTY (default) and piped jobs.
 
 ---
 

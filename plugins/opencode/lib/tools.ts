@@ -265,7 +265,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
   return [
     {
       description:
-        "Start a background job and return its record. `cmd` is the command vector. Set `wait: true` to block until ready in the same call instead of calling bgrun_wait separately. For interactive programs set `pty: true`, then drive them with bgrun_send / bgrun_screen / bgrun_expect. The job is completion-tracked: this session is notified when it becomes ready or exits (pass `notify: false` to opt out).",
+        "Start a background job and return its record. `cmd` is the command vector. Set `wait: true` to block until ready in the same call instead of calling bgrun_wait separately. Jobs use a PTY by default; pass `pty: false` for piped stdout/stderr (required with `sandbox`). Drive interactive jobs with bgrun_send / bgrun_screen / bgrun_expect. The job is completion-tracked: this session is notified when it becomes ready or exits (pass `notify: false` to opt out).",
       async execute(input, context) {
         const cmd = Array.isArray(input["cmd"])
           ? (input["cmd"] as unknown[]).map(String)
@@ -280,7 +280,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
         if (readyWhen) args.push("--ready-when", readyWhen);
         const cwd = str(input["cwd"]);
         if (cwd) args.push("--cwd", cwd);
-        if (bool(input["pty"])) args.push("--pty");
+        if (input["pty"] === false) args.push("--piped");
         const cols = num(input["pty_cols"]);
         if (cols !== undefined) args.push("--cols", String(Math.max(1, Math.round(cols))));
         const rows = num(input["pty_rows"]);
@@ -318,7 +318,7 @@ export function bgrunTools(deps: ToolDeps): BgrunToolDef[] {
           env: { additionalProperties: { type: "string" }, description: "Environment variables.", type: "object" },
           name: { description: "Stable handle (idempotent re-run).", type: "string" },
           notify: { description: "Notify this session on ready/exit (default: plugin setting).", type: "boolean" },
-          pty: { description: "Allocate a pseudo-terminal (for interactive programs; drive with bgrun_send/bgrun_screen/bgrun_expect).", type: "boolean" },
+          pty: { description: "Allocate a pseudo-terminal (default true; set false for piped stdout/stderr).", type: "boolean" },
           pty_cols: { description: "PTY width in columns (default 80, only with pty).", type: "number" },
           pty_rows: { description: "PTY height in rows (default 24, only with pty).", type: "number" },
           ready_when: { description: "Mark ready when a log line contains this substring.", type: "string" },

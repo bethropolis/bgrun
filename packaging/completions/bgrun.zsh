@@ -60,7 +60,9 @@ _bgrun() {
                         '--ready-when-url=[HTTP URL readiness]:url:' \
                         '--ready-when-file=[File existence readiness]:file:' \
                         '--after=[Start after a named job]:name:' \
-                        '--pty[Allocate a PTY]' \
+                        '--pty[Allocate a PTY (default)]' \
+                        '--piped[Run with piped stdout/stderr (no PTY)]' \
+                        '--no-pty[Alias for --piped]' \
                         '--restart=[Restart policy]:policy:(never on-crash on-failure always)' \
                         '--backoff=[Backoff duration]:duration:' \
                         '--max-retries=[Max consecutive restart attempts]:count:' \

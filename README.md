@@ -31,6 +31,8 @@ Launch a process in the background and tell `bgrun` exactly when it is ready to 
 bgrun run --name dev-server --ready-when-port 3000 "npm run dev"
 ```
 
+Jobs use a PTY by default; pass `--piped` to opt out.
+
 ### 2. Coordinate Your Workflow
 Block execution only until the server is actually ready, inspect its logs, or terminate it cleanly:
 ```bash

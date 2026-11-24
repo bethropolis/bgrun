@@ -55,7 +55,7 @@ bgrun wait <id> --timeout 30s
 | `bgrun clean [--workspace <ws>]` | Remove all terminated jobs |
 | `bgrun export <id> [--file <p>] [--level <l>] [--since <d>]` | Dump log history (incl. rotated) to a file |
 | `bgrun run --memory-max <size> --cpu-quota <pct> --pids-max <n>` | Hard cgroup v2 caps (Linux; run fails if unenforceable — use `--max-rss` for portable best-effort) |
-| `bgrun run --sandbox <cmd...>` | Namespace isolation: loopback-only network + private IPC (Linux, piped mode; rootless adds a user ns). Cannot combine with `--pty` or network readiness/health |
+| `bgrun run --sandbox <cmd...>` | Namespace isolation: loopback-only network + private IPC (Linux; piped mode is automatic; rootless adds a user ns). Cannot combine with `--pty` or network readiness/health |
 | `bgrun run-group <name> [name...]` | Start multiple named jobs in parallel |
 | `bgrun mcp` | Serve these commands as MCP tools over stdio (JSON-RPC 2.0) for agent clients |
 
@@ -74,7 +74,8 @@ bgrun wait <id> --timeout 30s
 | `--restart <policy>` | `never` / `on-crash` (non-zero exit) / `on-failure` (also clean exit that never became Ready) / `always`. Explicit `kill` always wins |
 | `--backoff <duration>` | Base delay between restarts (doubles per failure, cap 5m) |
 | `--max-retries <N>` | Give up after N consecutive restarts (resets after healthy run) |
-| `--pty` | Allocate pseudo-terminal |
+| `--pty` | Allocate pseudo-terminal (default; kept for compatibility) |
+| `--piped` / `--no-pty` | Run with piped stdout/stderr instead of a PTY (conflicts with `--pty`; automatic with `--sandbox`) |
 | `-e, --env <KEY=VAL>` | Env var for the job (repeatable) |
 | `-C, --cwd <DIR>` | Working directory (default: cwd) |
 | `--replace` | Kill existing same-name job first (needs `-n`) |
@@ -100,10 +101,11 @@ bgrun send <id> <text> --newline # send text + newline
 ## Interactive sessions (PTY) — driving TUIs, REPLs, wizards
 
 This is what plain background shells cannot do: spawn an interactive program
-and operate it. Start with `--pty`, then loop `expect` → `screen` → `send`:
+and operate it. PTY is the default; start with no flag (use `--piped` for
+piped mode), then loop `expect` → `screen` → `send`:
 
 ```bash
-bgrun run --pty -n repl -- python3 -i
+bgrun run -n repl -- python3 -i
 bgrun expect repl ">>>" --timeout 10s   # prompts match immediately, even mid-line
 bgrun screen repl --strip-ansi          # see current output without color codes
 bgrun send repl "1+1" --enter
@@ -126,7 +128,7 @@ Control keys are raw bytes in `send` (`--enter` is just `\n`):
 | Ctrl+C | `\x03` |
 | Ctrl+D (EOF) | `\x04` |
 
-Sizing: `run --pty --cols 120 --rows 40` (defaults 80x24, no resize while
+Sizing: `run --cols 120 --rows 40` (defaults 80x24, no resize while
 running). Kill with Ctrl+C via `send` (`\x03`) or `bgrun kill`.
 
 Slow starters: shells that probe terminal features stall on startup under
