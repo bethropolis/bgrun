@@ -98,7 +98,7 @@ Every request gets exactly one response line. The response format is:
 | `Wait` | `{ id, timeout_ms }` | `WaitResult { ready: bool, elapsed_ms: u64 }` |
 | `Send` | `{ id, data }` | `{ ok: true }` |
 | `Stats` | `{ id }` | `ResourceStats { cpu_pct, rss_mb, uptime_secs }` |
-| `Attach` | `{ id }` | hijacks socket for raw byte streaming |
+| `Attach` | `{ id, replay }` | hijacks socket for raw byte streaming; `replay` sends buffered PTY bytes after the ack |
 | `Expect` | `{ id, pattern, is_regex, timeout_ms }` | `{ matched: bool, line_number, content }` |
 | `ResizePty` | `{ id, cols, rows }` | `{ resized: true }` |
 

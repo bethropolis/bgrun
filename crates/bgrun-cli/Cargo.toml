@@ -30,3 +30,7 @@ futures-util = { workspace = true }
 schemars = { workspace = true }
 inquire = { workspace = true }
 clap_mangen = { workspace = true }
+ratatui = { workspace = true }
+tui-term = { workspace = true }
+tui-input = { workspace = true }
+tokio-util = { workspace = true }

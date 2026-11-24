@@ -1218,7 +1218,10 @@ mod tests {
             },
             Command::Clean { workspace: None },
             // Intentionally not MCP tools:
-            Command::Attach { id: "x".into() },
+            Command::Attach {
+                id: "x".into(),
+                replay: false,
+            },
             Command::ResizePty {
                 id: "x".into(),
                 cols: 80,

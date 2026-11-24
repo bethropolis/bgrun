@@ -113,7 +113,9 @@ async fn handle_connection(stream: UnixStream, store: Arc<Mutex<JobStore>>) -> R
 
     // If it's an Attach or StreamLogs command, hijack the connection
     match request.command {
-        Command::Attach { id } => return handle_attach(id, stream, store).await,
+        Command::Attach { id, replay } => {
+            return handle_attach(id, replay, stream, store).await;
+        }
         Command::StreamLogs {
             id,
             cursor,
@@ -206,7 +208,12 @@ async fn read_first_line(stream: &UnixStream) -> Option<String> {
 /// 2. Forwards socket reads → PTY writer (stdin)
 /// 3. Forwards broadcast PTY output → socket (stdout)
 /// 4. Returns when either side disconnects or the job exits
-async fn handle_attach(id: String, stream: UnixStream, store: Arc<Mutex<JobStore>>) -> Result<()> {
+async fn handle_attach(
+    id: String,
+    replay: bool,
+    stream: UnixStream,
+    store: Arc<Mutex<JobStore>>,
+) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
     // Resolve name to UUID and verify job is alive+PTY under single lock
@@ -257,7 +264,9 @@ async fn handle_attach(id: String, stream: UnixStream, store: Arc<Mutex<JobStore
         return Ok(());
     };
 
-    // Subscribe to the broadcast channel for PTY output (use resolved job_id)
+    // Subscribe BEFORE snapshotting the replay buffer so live bytes queue up
+    // in the receiver while the snapshot is taken — no output is lost between
+    // replay and live streaming.
     let rx = {
         let broadcasts = runner::JOB_BROADCASTS.lock().await;
         broadcasts
@@ -267,6 +276,24 @@ async fn handle_attach(id: String, stream: UnixStream, store: Arc<Mutex<JobStore
     let Some(mut rx) = rx else {
         return Ok(());
     };
+
+    // Replay buffered raw PTY bytes right after the ack so a newly attached
+    // terminal can reconstruct the existing screen immediately.
+    if replay {
+        let snapshot: Vec<u8> = {
+            let replays = runner::PTY_REPLAY_BUFFERS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            replays
+                .get(&job_id)
+                .map(|ring| ring.iter().copied().collect())
+                .unwrap_or_default()
+        };
+        if !snapshot.is_empty() {
+            stream_write.write_all(&snapshot).await?;
+            stream_write.flush().await?;
+        }
+    }
 
     // Shared signal to notify stdin forwarding when the job exits
     let exit_notify = Arc::new(tokio::sync::Notify::new());
@@ -1159,6 +1186,7 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
             for id in &to_remove {
                 store.lock().await.remove(id);
                 let _ = tokio::fs::remove_dir_all(crate::state::job_dir(id)).await;
+                runner::clear_pty_replay(id);
             }
             info!(count = %count, "cleaned terminal-state jobs");
             Response::ok(req_id.clone(), serde_json::json!({"removed": count}))
@@ -1366,7 +1394,7 @@ fn args_summary(cmd: &Command) -> String {
         | Command::Wait { id, .. }
         | Command::Send { id, .. }
         | Command::Stats { id }
-        | Command::Attach { id }
+        | Command::Attach { id, .. }
         | Command::StreamLogs { id, .. }
         | Command::Screen { id, .. } => format!("id={id}"),
         Command::Tail(TailArgs {
@@ -1649,5 +1677,75 @@ mod tests {
         assert!(!match_line(">>>", None, "booting"));
         let re = regex::Regex::new(r"listening on :\d+").unwrap();
         assert!(match_line("", Some(&re), "listening on :8080"));
+    }
+
+    /// A TUI attaching to an already-running PTY job must receive the buffered
+    /// screen bytes immediately, not just output produced after the attach.
+    #[tokio::test]
+    async fn attach_replays_buffered_pty_bytes() {
+        use bgrun_core::Job;
+        use bgrun_proto::JobState;
+        use std::collections::VecDeque;
+        use std::time::Duration;
+
+        let id = "test-attach-replay";
+        let store = Arc::new(Mutex::new(JobStore::new()));
+        {
+            let mut job = Job::new(id.to_string(), vec!["sh".into()], Some("repl".into()), None);
+            job.state = JobState::Running;
+            job.pty = true;
+            store.lock().await.insert(job);
+        }
+        runner::PTY_WRITERS.lock().await.insert(
+            id.to_string(),
+            Arc::new(std::sync::Mutex::new(Box::new(Vec::new()))),
+        );
+        let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel(64);
+        runner::JOB_BROADCASTS
+            .lock()
+            .await
+            .insert(id.to_string(), broadcast_tx);
+        {
+            let mut replays = runner::PTY_REPLAY_BUFFERS.lock().unwrap();
+            replays.insert(id.to_string(), VecDeque::from(b"hello\r\n".to_vec()));
+        }
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let request = Request {
+            id: "req-1".into(),
+            command: Command::Attach {
+                id: id.to_string(),
+                replay: true,
+            },
+        };
+        let mut payload = serde_json::to_string(&request).unwrap();
+        payload.push('\n');
+        client.write_all(payload.as_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        let server_task = tokio::spawn(handle_attach(id.to_string(), true, server, store.clone()));
+
+        let mut ack = String::new();
+        let mut reader = BufReader::new(&mut client);
+        tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut ack))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ack.contains("\"ok\":true"), "ack: {ack}");
+
+        let mut replay = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(2), reader.read(&mut replay))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&replay[..n], b"hello\r\n");
+        drop(reader);
+        drop(client);
+
+        server_task.await.unwrap().unwrap();
+        store.lock().await.remove(id);
+        runner::PTY_WRITERS.lock().await.remove(id);
+        runner::JOB_BROADCASTS.lock().await.remove(id);
+        runner::clear_pty_replay(id);
     }
 }

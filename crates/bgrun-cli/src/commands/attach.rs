@@ -23,7 +23,10 @@ pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     // Send NDJSON attach request (use write half, then split)
     let request = bgrun_proto::Request {
         id: uuid::Uuid::new_v4().to_string(),
-        command: Command::Attach { id: id.clone() },
+        command: Command::Attach {
+            id: id.clone(),
+            replay: true,
+        },
     };
     let json = serde_json::to_string(&request)?;
 
@@ -33,13 +36,12 @@ pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     write_half.write_all(b"\n").await?;
     write_half.flush().await?;
 
-    // Read initial response line. The BufReader may have buffered PTY bytes
-    // beyond the first line; keep it (and any buffered remainder) alive by
-    // moving it into run_attach_loop instead of dropping it.
+    // Read just the ack line. Any replay bytes read ahead past it stay inside
+    // the BufReader and are drained by run_attach_loop — copying them out here
+    // as well would emit them twice.
     let mut reader = BufReader::new(read_half);
     let mut response_buf = String::new();
     reader.read_line(&mut response_buf).await?;
-    let buffered = reader.buffer().to_vec();
 
     let response: serde_json::Value = serde_json::from_str(response_buf.trim())?;
     if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
@@ -56,14 +58,13 @@ pub async fn attach_job(id: String, _json: bool) -> Result<()> {
     // Enable raw mode with safety guard (restores terminal even on panic)
     let _guard = RawModeGuard::new()?;
 
-    run_attach_loop(id, reader, write_half, buffered).await
+    run_attach_loop(id, reader, write_half).await
 }
 
 async fn run_attach_loop(
     id: String,
     mut stream_read: BufReader<tokio::io::ReadHalf<UnixStream>>,
     mut stream_write: tokio::io::WriteHalf<UnixStream>,
-    buffered: Vec<u8>,
 ) -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
 
@@ -80,14 +81,10 @@ async fn run_attach_loop(
             .await;
     }
 
-    // Spawn task to forward socket output → stdout. Any bytes already sitting
-    // in the BufReader (read ahead past the control line) go first.
+    // Spawn task to forward socket output → stdout. This includes any replay
+    // bytes the BufReader read ahead past the ack line.
     let stdout_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
-        if !buffered.is_empty() {
-            stdout.write_all(&buffered).await?;
-            stdout.flush().await?;
-        }
         let mut buf = [0u8; 8192];
         loop {
             match stream_read.read(&mut buf).await {

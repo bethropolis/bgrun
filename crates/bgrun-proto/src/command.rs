@@ -161,6 +161,10 @@ pub enum Command {
     },
     Attach {
         id: String,
+        /// When true, send buffered raw PTY bytes right after the attach ack
+        /// so a newly attached terminal renders the existing screen immediately.
+        #[serde(default)]
+        replay: bool,
     },
     ResizePty {
         id: String,
