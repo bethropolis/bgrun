@@ -8,6 +8,7 @@ mod duration;
 mod mcp;
 mod mcp_types;
 pub mod output;
+mod tui;
 
 #[derive(Parser)]
 #[command(
