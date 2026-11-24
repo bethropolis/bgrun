@@ -794,22 +794,18 @@ printf '%s\n' \
 
 ---
 
-## Interactive menu
+## Interactive TUI
 
-Running `bgrun -i` (or `bgrun` with no subcommand) opens an interactive menu:
+Running `bgrun -i` (or `bgrun` with no subcommand) opens a full-screen TUI:
 
-- **Workspace filter** — optionally scope the whole session to one workspace
-- **Dashboard** — live counts on every loop (`N job(s) · M alive · K terminated`)
-- **Browse jobs** — filterable picker (`short-id | name [state] | command`), then a per-job submenu:
-  status + stats, tail (with lines/digest/level prompts), screen buffer, diff,
-  send stdin, wait until ready, expect pattern, PTY attach, graceful stop,
-  restart from stored definition, kill (with confirm)
-- **Start a new job** — prompts for command, name, ready pattern, env vars,
-  and optional wait-until-ready
-- **Clean terminated jobs** — remove exited/crashed/killed jobs in scope
-- **Change workspace filter / Exit**
+- **Job rail** — live list with state, PID and PTY/piped mode; `b` toggles the rail for a full-width terminal
+- **Embedded terminal** — live PTY output (buffered bytes replayed on attach) or replayed logs for piped/exited jobs, with ANSI colors and scrollback
+- **Normal mode** — `j`/`k` navigate, `Enter`/`i` type into a live PTY, `PageUp`/`PageDown` scroll through scrollback
+- **Shortcuts** — `Ctrl+K` / `:` command palette, `n` new job, `r` restart, `s` stop, `K` kill, `l` logs/diff, `c` clean terminated, `?` help, `q` quit
+- **Typing mode** — keystrokes go straight to the job's PTY; `Ctrl+P` then `Ctrl+Q` detaches
+- **Palette & overlays** — fuzzy command palette, prompts for new job/export path/workspace filter/log search, and digest/logs/inspect/help overlays
 
-ESC goes back a level; Ctrl+C exits. The job list is populated live from the daemon.
+Quitting the TUI does not stop the daemon or any jobs.
 
 ---
 

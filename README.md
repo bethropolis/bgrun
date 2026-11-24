@@ -46,6 +46,9 @@ bgrun tail dev-server --lines 10
 bgrun kill dev-server
 ```
 
+### 3. Interactive TUI
+Prefer a full-screen view over typing commands? Launch the TUI with `bgrun -i` (or plain `bgrun`). It shows a live job rail and an embedded terminal, lets you type straight into any live PTY, and exposes a `Ctrl+K` command palette. Quitting the TUI leaves the daemon and jobs running.
+
 ---
 
 ## Commands
