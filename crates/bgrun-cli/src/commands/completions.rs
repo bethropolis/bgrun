@@ -76,6 +76,7 @@ complete -c bgrun -f
 
 # Commands
 complete -c bgrun -n "__fish_use_subcommand" -a "run" -d "Run a command in the background"
+complete -c bgrun -n "__fish_use_subcommand" -a "tui" -d "Launch the full-screen interactive TUI"
 complete -c bgrun -n "__fish_use_subcommand" -a "list" -d "List running jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "status" -d "Get status of a job"
 complete -c bgrun -n "__fish_use_subcommand" -a "kill" -d "Kill a job"
@@ -202,7 +203,7 @@ _bgrun()
     local cur prev words cword
     _init_completion || return
 
-    local commands="run list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill mcp help"
+    local commands="run tui list status kill stop restart wait tail diff run-group send stats expect attach screen export schema clean skill mcp help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -260,6 +261,7 @@ _bgrun() {
     local -a commands
     commands=(
         'run:Run a command in the background'
+        'tui:Launch the full-screen interactive TUI'
         'list:List running jobs'
         'status:Get status of a job'
         'kill:Kill a job'

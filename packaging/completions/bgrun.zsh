@@ -8,6 +8,7 @@ _bgrun() {
     local -a commands
     commands=(
         'run:Run a command in the background'
+        'tui:Launch the full-screen interactive TUI'
         'list:List running jobs'
         'status:Get status of a job'
         'kill:Kill a job'

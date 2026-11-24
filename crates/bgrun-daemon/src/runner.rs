@@ -113,14 +113,18 @@ const PTY_REPLAY_MAX: usize = 64 * 1024;
 /// escape sequences intact so a `vt100` parser can rebuild the exact screen.
 /// Entries survive job exit (so a crashed PTY's last screen stays inspectable)
 /// and are removed when a job record is replaced or cleaned.
-pub static PTY_REPLAY_BUFFERS: LazyLock<std::sync::Mutex<HashMap<String, VecDeque<u8>>>> =
-    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+/// A Tokio mutex lets `handle_attach` hold the guard while it subscribes to the
+/// broadcast channel (so replay + subscription form one critical section).
+/// `capture_pty_output` runs on the blocking pool and uses `blocking_lock`,
+/// matching `SCREEN_BUFFERS`.
+pub static PTY_REPLAY_BUFFERS: LazyLock<Mutex<HashMap<String, VecDeque<u8>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Appends raw PTY bytes to the bounded replay ring for `id`.
+///
+/// Called from the blocking PTY capture thread, never from an async context.
 fn record_pty_replay(id: &str, bytes: &[u8]) {
-    let mut replays = PTY_REPLAY_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut replays = PTY_REPLAY_BUFFERS.blocking_lock();
     let ring = replays.entry(id.to_string()).or_default();
     ring.extend(bytes);
     if ring.len() > PTY_REPLAY_MAX {
@@ -130,11 +134,8 @@ fn record_pty_replay(id: &str, bytes: &[u8]) {
 }
 
 /// Drops the replay ring for a job.
-pub fn clear_pty_replay(id: &str) {
-    let mut replays = PTY_REPLAY_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    replays.remove(id);
+pub async fn clear_pty_replay(id: &str) {
+    PTY_REPLAY_BUFFERS.lock().await.remove(id);
 }
 
 /// Binds to an ephemeral port to find a free one, then returns the port number.
@@ -375,7 +376,7 @@ pub async fn spawn_job(mut args: RunArgs, store: Arc<Mutex<JobStore>>) -> Result
             STDIN_HANDLES.lock().await.remove(&id);
             LOG_WRITE_LOCKS.lock().await.remove(&id);
             SCREEN_BUFFERS.lock().await.remove(&id);
-            clear_pty_replay(&id);
+            clear_pty_replay(&id).await;
             publish_partial(&id, &[]);
             return Ok(dup);
         }
@@ -797,7 +798,7 @@ async fn swap_record(
         store.remove(old_id);
     }
     let _ = tokio::fs::remove_dir_all(state::job_dir(old_id)).await;
-    clear_pty_replay(old_id);
+    clear_pty_replay(old_id).await;
     #[cfg(target_os = "linux")]
     {
         crate::cgroup::remove_job_group(old_id);
@@ -1058,7 +1059,7 @@ async fn spawn_pty_job(
             PTY_PAIRS.lock().await.remove(&id);
             JOB_BROADCASTS.lock().await.remove(&id);
             SCREEN_BUFFERS.lock().await.remove(&id);
-            clear_pty_replay(&id);
+            clear_pty_replay(&id).await;
             publish_partial(&id, &[]);
             return Ok(dup);
         }
@@ -2029,19 +2030,19 @@ mod tests {
     #[test]
     fn test_pty_replay_ring_is_bounded_and_clearable() {
         let id = "test-pty-replay-ring";
-        clear_pty_replay(id);
+        PTY_REPLAY_BUFFERS.blocking_lock().remove(id);
         let chunk = vec![b'x'; 1024];
         for _ in 0..(PTY_REPLAY_MAX / chunk.len() + 2) {
             record_pty_replay(id, &chunk);
         }
         {
-            let replays = PTY_REPLAY_BUFFERS.lock().unwrap();
+            let replays = PTY_REPLAY_BUFFERS.blocking_lock();
             let ring = replays.get(id).expect("replay ring should exist");
             assert_eq!(ring.len(), PTY_REPLAY_MAX);
             assert!(ring.iter().all(|&b| b == b'x'));
         }
-        clear_pty_replay(id);
-        assert!(PTY_REPLAY_BUFFERS.lock().unwrap().get(id).is_none());
+        PTY_REPLAY_BUFFERS.blocking_lock().remove(id);
+        assert!(PTY_REPLAY_BUFFERS.blocking_lock().get(id).is_none());
     }
 
     #[test]

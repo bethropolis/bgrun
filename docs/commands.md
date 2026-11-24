@@ -1,6 +1,6 @@
 # Command Reference
 
-bgrun has 21 subcommands (19 user-facing, plus hidden `completions` and `mcp`). All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
+bgrun has 22 subcommands (20 user-facing, plus hidden `completions` and `mcp`). All commands return JSON to stdout when piped, or human-readable output when connected to a terminal.
 
 The daemon auto-starts on the first CLI invocation. You don't need to manually start it.
 
@@ -796,7 +796,7 @@ printf '%s\n' \
 
 ## Interactive TUI
 
-Running `bgrun -i` (or `bgrun` with no subcommand) opens a full-screen TUI:
+Running `bgrun tui` (or `bgrun -i` / plain `bgrun`) opens a full-screen TUI:
 
 - **Job rail** — live list with state, PID and PTY/piped mode; `b` toggles the rail for a full-width terminal
 - **Embedded terminal** — live PTY output (buffered bytes replayed on attach) or replayed logs for piped/exited jobs, with ANSI colors and scrollback

@@ -264,35 +264,39 @@ async fn handle_attach(
         return Ok(());
     };
 
-    // Subscribe BEFORE snapshotting the replay buffer so live bytes queue up
-    // in the receiver while the snapshot is taken — no output is lost between
-    // replay and live streaming.
-    let rx = {
-        let broadcasts = runner::JOB_BROADCASTS.lock().await;
-        broadcasts
-            .get(&job_id)
-            .map(tokio::sync::broadcast::Sender::subscribe)
-    };
-    let Some(mut rx) = rx else {
-        return Ok(());
-    };
-
-    // Replay buffered raw PTY bytes right after the ack so a newly attached
-    // terminal can reconstruct the existing screen immediately.
-    if replay {
-        let snapshot: Vec<u8> = {
-            let replays = runner::PTY_REPLAY_BUFFERS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Subscribe and snapshot as one critical section with respect to the
+    // replay ring. The capture thread broadcasts a chunk before recording it,
+    // and needs this lock to append. Holding the lock while subscribing means:
+    // bytes in the snapshot were broadcast before the subscription (so the
+    // receiver cannot duplicate them), and bytes broadcast after the
+    // subscription are already queued in the receiver (so none are lost).
+    let (mut rx, snapshot) = {
+        let replays = runner::PTY_REPLAY_BUFFERS.lock().await;
+        let rx = {
+            let broadcasts = runner::JOB_BROADCASTS.lock().await;
+            broadcasts
+                .get(&job_id)
+                .map(tokio::sync::broadcast::Sender::subscribe)
+        };
+        let Some(rx) = rx else {
+            return Ok(());
+        };
+        let snapshot: Vec<u8> = if replay {
             replays
                 .get(&job_id)
                 .map(|ring| ring.iter().copied().collect())
                 .unwrap_or_default()
+        } else {
+            Vec::new()
         };
-        if !snapshot.is_empty() {
-            stream_write.write_all(&snapshot).await?;
-            stream_write.flush().await?;
-        }
+        (rx, snapshot)
+    };
+
+    // Replay buffered raw PTY bytes right after the ack so a newly attached
+    // terminal can reconstruct the existing screen immediately.
+    if !snapshot.is_empty() {
+        stream_write.write_all(&snapshot).await?;
+        stream_write.flush().await?;
     }
 
     // Shared signal to notify stdin forwarding when the job exits
@@ -1186,7 +1190,7 @@ async fn dispatch(request: Request, store: Arc<Mutex<JobStore>>) -> serde_json::
             for id in &to_remove {
                 store.lock().await.remove(id);
                 let _ = tokio::fs::remove_dir_all(crate::state::job_dir(id)).await;
-                runner::clear_pty_replay(id);
+                runner::clear_pty_replay(id).await;
             }
             info!(count = %count, "cleaned terminal-state jobs");
             Response::ok(req_id.clone(), serde_json::json!({"removed": count}))
@@ -1701,12 +1705,13 @@ mod tests {
             Arc::new(std::sync::Mutex::new(Box::new(Vec::new()))),
         );
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel(64);
+        let live_tx = broadcast_tx.clone();
         runner::JOB_BROADCASTS
             .lock()
             .await
             .insert(id.to_string(), broadcast_tx);
         {
-            let mut replays = runner::PTY_REPLAY_BUFFERS.lock().unwrap();
+            let mut replays = runner::PTY_REPLAY_BUFFERS.lock().await;
             replays.insert(id.to_string(), VecDeque::from(b"hello\r\n".to_vec()));
         }
 
@@ -1739,6 +1744,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(&replay[..n], b"hello\r\n");
+
+        // Live bytes emitted after the attach must arrive exactly once.
+        live_tx.send(b"live\r\n".to_vec()).unwrap();
+        let mut live = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(2), reader.read(&mut live))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&live[..n], b"live\r\n");
         drop(reader);
         drop(client);
 
@@ -1746,6 +1760,6 @@ mod tests {
         store.lock().await.remove(id);
         runner::PTY_WRITERS.lock().await.remove(id);
         runner::JOB_BROADCASTS.lock().await.remove(id);
-        runner::clear_pty_replay(id);
+        runner::clear_pty_replay(id).await;
     }
 }

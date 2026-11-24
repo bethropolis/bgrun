@@ -171,6 +171,9 @@ enum Commands {
         wait_timeout: String,
     },
 
+    /// Launch the full-screen interactive TUI
+    Tui,
+
     /// List running jobs
     List {
         /// Filter by workspace
@@ -555,6 +558,9 @@ async fn main() -> Result<()> {
                 wait_timeout,
             };
             commands::run::run(cmd, name, workspace, flags, json).await?;
+        }
+        Some(Commands::Tui) => {
+            commands::interactive::start_menu().await?;
         }
         Some(Commands::List { workspace }) => {
             commands::list::list(workspace, json).await?;

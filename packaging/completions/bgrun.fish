@@ -5,6 +5,7 @@ complete -c bgrun -f
 
 # Commands
 complete -c bgrun -n "__fish_use_subcommand" -a "run" -d "Run a command in the background"
+complete -c bgrun -n "__fish_use_subcommand" -a "tui" -d "Launch the full-screen interactive TUI"
 complete -c bgrun -n "__fish_use_subcommand" -a "list" -d "List running jobs"
 complete -c bgrun -n "__fish_use_subcommand" -a "status" -d "Get status of a job"
 complete -c bgrun -n "__fish_use_subcommand" -a "kill" -d "Kill a job"
