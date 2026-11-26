@@ -1,19 +1,25 @@
-//! Key handling, PTY byte encoding, and command palette actions.
+//! Key and mouse handling, PTY byte encoding, and command actions.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bgrun_proto::{Command, JobRecord, KillArgs, LogDigest, RunArgs, TailArgs};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Position;
+use ratatui::widgets::ListState;
 use tokio::sync::mpsc;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use super::daemon::{ActiveStream, DaemonEvent, rpc};
+use super::daemon::{ActiveStream, DaemonEvent, fetch_jobs, rpc, rpc_autostart};
+use super::settings::SettingsRow;
 use super::state::{App, Mode, OverlayKind, PaletteAction, PromptKind};
 
-const PALETTE_ITEMS: [(&str, PaletteAction); 11] = [
+const PALETTE_ITEMS: [(&str, PaletteAction); 12] = [
     ("View digest", PaletteAction::ViewDigest),
     ("Search logs", PaletteAction::SearchLogs),
     ("Inspect job", PaletteAction::InspectJob),
@@ -25,6 +31,7 @@ const PALETTE_ITEMS: [(&str, PaletteAction); 11] = [
     ("Kill job", PaletteAction::KillJob),
     ("Clean terminated", PaletteAction::CleanTerminated),
     ("Toggle sidebar", PaletteAction::ToggleSidebar),
+    ("Settings", PaletteAction::Settings),
 ];
 
 /// Returns the fuzzy-filtered palette entries for the current input.
@@ -58,22 +65,32 @@ pub async fn handle_key(
 
     match app.mode {
         Mode::PtyType { .. } => {
-            handle_pty_key(app, key, active);
+            if let Some(action) = pty_key_action(app, key, app.parser.screen().application_cursor())
+                && let Some(stream) = active
+                && let PtyKeyAction::Forward(bytes) = action
+            {
+                stream.send_bytes(bytes);
+            }
             Ok(())
         }
         Mode::Palette => handle_palette_key(app, key, socket_path, tx).await,
         Mode::Prompt(kind) => handle_prompt_key(app, key, kind, socket_path, tx).await,
-        Mode::Overlay(_) => {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
-                app.mode = Mode::Normal;
-            }
-            Ok(())
+        Mode::Overlay(kind) => {
+            let path = super::settings::settings_path();
+            handle_overlay_key(app, key, kind, &path).await
         }
         Mode::Normal => handle_normal_key(app, key, socket_path, tx).await,
     }
 }
 
-fn handle_pty_key(app: &mut App, key: KeyEvent, active: Option<&ActiveStream>) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PtyKeyAction {
+    Pending,
+    Detach,
+    Forward(Vec<u8>),
+}
+
+fn pty_key_action(app: &mut App, key: KeyEvent, app_cursor: bool) -> Option<PtyKeyAction> {
     let pending = matches!(
         app.mode,
         Mode::PtyType {
@@ -86,25 +103,28 @@ fn handle_pty_key(app: &mut App, key: KeyEvent, active: Option<&ActiveStream>) {
     if pending {
         if is_ctrl_q {
             app.mode = Mode::Normal;
-            app.toast = Some("detached — job still running".into());
-            return;
+            app.set_toast("detached — job still running");
+            return Some(PtyKeyAction::Detach);
         }
-        if let Some(stream) = active {
-            stream.send_bytes(vec![0x10]);
+        // The chord was not completed. Flush the pending Ctrl+P before the
+        // current key and clear the chord so the next key is independent.
+        app.mode = Mode::PtyType {
+            ctrl_p_pending: false,
+        };
+        let mut bytes = vec![0x10];
+        if let Some(current) = key_event_to_bytes(key, app_cursor) {
+            bytes.extend(current);
         }
-    } else if is_ctrl_p {
+        return Some(PtyKeyAction::Forward(bytes));
+    }
+
+    if is_ctrl_p {
         app.mode = Mode::PtyType {
             ctrl_p_pending: true,
         };
-        return;
+        return Some(PtyKeyAction::Pending);
     }
-
-    let app_cursor = app.parser.screen().application_cursor();
-    if let Some(bytes) = key_event_to_bytes(key, app_cursor)
-        && let Some(stream) = active
-    {
-        stream.send_bytes(bytes);
-    }
+    key_event_to_bytes(key, app_cursor).map(PtyKeyAction::Forward)
 }
 
 /// Translates a crossterm key event into terminal byte sequences.
@@ -181,9 +201,7 @@ async fn handle_normal_key(
     tx: &mpsc::UnboundedSender<DaemonEvent>,
 ) -> Result<()> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
-        app.palette_input = Input::default();
-        app.palette_selected = 0;
-        app.mode = Mode::Palette;
+        open_palette(app);
         return Ok(());
     }
 
@@ -198,6 +216,7 @@ async fn handle_normal_key(
             };
         }
         KeyCode::Char('b') => app.show_rail = !app.show_rail,
+        KeyCode::Char(',') => open_settings(app),
         KeyCode::Char('n') => {
             app.prompt_input = Input::default();
             app.mode = Mode::Prompt(PromptKind::NewJob);
@@ -206,29 +225,32 @@ async fn handle_normal_key(
         KeyCode::Char('s') => stop_selected(app, socket_path, tx).await,
         KeyCode::Char('K') => kill_selected(app, socket_path, tx).await,
         KeyCode::Char('l') => {
+            app.log_search_query.clear();
+            app.log_scroll = 0;
             load_logs(app, socket_path, tx).await?;
             app.mode = Mode::Overlay(OverlayKind::LogsDiff);
         }
         KeyCode::Char('c') => clean_terminated(app, socket_path, tx).await,
         KeyCode::Char('?') => app.mode = Mode::Overlay(OverlayKind::Help),
-        KeyCode::PageUp => {
-            app.scroll_offset = app.scroll_offset.saturating_add(10);
-            app.parser.screen_mut().set_scrollback(app.scroll_offset);
-        }
-        KeyCode::PageDown => {
-            app.scroll_offset = app.scroll_offset.saturating_sub(10);
-            app.parser.screen_mut().set_scrollback(app.scroll_offset);
-        }
-        KeyCode::Char(':') => {
-            app.palette_input = Input::default();
-            app.palette_selected = 0;
-            app.mode = Mode::Palette;
-        }
+        KeyCode::PageUp => scroll_stage(app, 10),
+        KeyCode::PageDown => scroll_stage(app, -10),
+        KeyCode::Char(':') => open_palette(app),
         KeyCode::Esc => app.toast = None,
         KeyCode::Char('q') => app.should_quit = true,
         _ => {}
     }
     Ok(())
+}
+
+fn open_palette(app: &mut App) {
+    app.palette_input = Input::default();
+    app.palette_state.select(Some(0));
+    app.mode = Mode::Palette;
+}
+
+fn open_settings(app: &mut App) {
+    app.settings_state.select(Some(0));
+    app.mode = Mode::Overlay(OverlayKind::Settings);
 }
 
 async fn handle_palette_key(
@@ -237,17 +259,17 @@ async fn handle_palette_key(
     socket_path: &Path,
     tx: &mpsc::UnboundedSender<DaemonEvent>,
 ) -> Result<()> {
+    let action_count = palette_actions(app).len();
     match key.code {
         KeyCode::Esc => app.mode = Mode::Normal,
-        KeyCode::Down => {
-            let max = palette_actions(app).len().saturating_sub(1);
-            app.palette_selected = app.palette_selected.saturating_add(1).min(max);
-        }
-        KeyCode::Up => app.palette_selected = app.palette_selected.saturating_sub(1),
+        KeyCode::Down => move_list_selection(&mut app.palette_state, 1, action_count),
+        KeyCode::Up => move_list_selection(&mut app.palette_state, -1, action_count),
         KeyCode::Enter => {
-            let action = palette_actions(app)
-                .get(app.palette_selected)
-                .map(|(_, action)| *action);
+            let action = app
+                .palette_state
+                .selected()
+                .and_then(|index| palette_actions(app).into_iter().nth(index))
+                .map(|(_, action)| action);
             app.mode = Mode::Normal;
             if let Some(action) = action {
                 execute_palette_action(app, action, socket_path, tx).await?;
@@ -255,10 +277,25 @@ async fn handle_palette_key(
         }
         _ => {
             app.palette_input.handle_event(&Event::Key(key));
-            app.palette_selected = 0;
+            app.palette_state.select(Some(0));
         }
     }
     Ok(())
+}
+
+fn move_list_selection(state: &mut ListState, delta: i32, len: usize) {
+    if len == 0 {
+        state.select(None);
+        return;
+    }
+    let current = state.selected().unwrap_or(0);
+    let next = if delta < 0 {
+        current.saturating_sub(delta.unsigned_abs() as usize)
+    } else {
+        current.saturating_add(usize::try_from(delta).unwrap_or(0))
+    }
+    .min(len - 1);
+    state.select(Some(next));
 }
 
 async fn handle_prompt_key(
@@ -283,6 +320,140 @@ async fn handle_prompt_key(
         }
     }
     Ok(())
+}
+
+async fn handle_overlay_key(
+    app: &mut App,
+    key: KeyEvent,
+    kind: OverlayKind,
+    settings_path: &Path,
+) -> Result<()> {
+    match kind {
+        OverlayKind::Settings => handle_settings_key(app, key, settings_path).await,
+        OverlayKind::LogsDiff => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => scroll_logs(app, -1),
+                KeyCode::Char('k') | KeyCode::Up => scroll_logs(app, 1),
+                KeyCode::PageDown => scroll_logs(app, -10),
+                KeyCode::PageUp => scroll_logs(app, 10),
+                KeyCode::Char('g') => app.log_scroll = usize::MAX,
+                KeyCode::Char('G') => app.log_scroll = 0,
+                _ => {}
+            }
+            Ok(())
+        }
+        OverlayKind::Digest | OverlayKind::Inspect | OverlayKind::Help => {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
+                app.mode = Mode::Normal;
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn handle_settings_key(app: &mut App, key: KeyEvent, settings_path: &Path) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char(',') => {
+            if let Err(err) = close_settings(app, settings_path).await {
+                app.set_toast(format!("settings save failed: {err:#}"));
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            move_list_selection(&mut app.settings_state, 1, SettingsRow::ALL.len());
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            move_list_selection(&mut app.settings_state, -1, SettingsRow::ALL.len());
+        }
+        KeyCode::Char('h' | 'l' | ' ') | KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
+            let forwards = !matches!(key.code, KeyCode::Char('h') | KeyCode::Left);
+            let index = app.settings_state.selected().unwrap_or(0);
+            let row = SettingsRow::ALL[index.min(SettingsRow::ALL.len() - 1)];
+            let mouse_before = app.settings.mouse;
+            app.settings.cycle(row, forwards);
+            if app.settings.mouse != mouse_before {
+                apply_mouse_capture(app);
+            }
+            app.set_poll_ms(app.settings.poll_ms);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn close_settings(app: &mut App, path: &Path) -> Result<()> {
+    app.mode = Mode::Normal;
+    super::settings::save_to_path(path, &app.settings).await
+}
+
+fn apply_mouse_capture(app: &mut App) {
+    let result = if app.settings.mouse {
+        crossterm::execute!(std::io::stdout(), EnableMouseCapture)
+    } else {
+        crossterm::execute!(std::io::stdout(), DisableMouseCapture)
+    };
+    if let Err(err) = result {
+        // Mouse support is optional; a terminal that rejects it must not stop
+        // the TUI or prevent the preference from being saved.
+        app.set_toast(format!("mouse capture unavailable: {err}"));
+    }
+}
+
+pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    if matches!(app.mode, Mode::Overlay(OverlayKind::LogsDiff)) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => scroll_logs(app, 3),
+            MouseEventKind::ScrollDown => scroll_logs(app, -3),
+            _ => {}
+        }
+        return;
+    }
+
+    let position = Position::new(mouse.column, mouse.row);
+    if app.rail_inner_rect.contains(position) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let row = mouse.row.saturating_sub(app.rail_inner_rect.y) as usize;
+                let list_height = app.rail_inner_rect.height.saturating_sub(2) as usize;
+                if row < list_height {
+                    let index = app.rail_state.offset() + row;
+                    app.select_index(index);
+                }
+            }
+            MouseEventKind::ScrollUp => app.select_previous(),
+            MouseEventKind::ScrollDown => app.select_next(),
+            _ => {}
+        }
+        return;
+    }
+
+    if matches!(app.mode, Mode::Normal) && app.stage_pty_rect.contains(position) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => scroll_stage(app, 3),
+            MouseEventKind::ScrollDown => scroll_stage(app, -3),
+            _ => {}
+        }
+    }
+}
+
+fn scroll_stage(app: &mut App, delta: i32) {
+    app.scroll_offset = if delta >= 0 {
+        app.scroll_offset
+            .saturating_add(usize::try_from(delta).unwrap_or(0))
+    } else {
+        app.scroll_offset
+            .saturating_sub(delta.unsigned_abs() as usize)
+    };
+    app.parser.screen_mut().set_scrollback(app.scroll_offset);
+}
+
+fn scroll_logs(app: &mut App, delta: i32) {
+    app.log_scroll = if delta >= 0 {
+        app.log_scroll
+            .saturating_add(usize::try_from(delta).unwrap_or(0))
+    } else {
+        app.log_scroll.saturating_sub(delta.unsigned_abs() as usize)
+    };
 }
 
 async fn execute_palette_action(
@@ -318,6 +489,7 @@ async fn execute_palette_action(
         PaletteAction::KillJob => kill_selected(app, socket_path, tx).await,
         PaletteAction::CleanTerminated => clean_terminated(app, socket_path, tx).await,
         PaletteAction::ToggleSidebar => app.show_rail = !app.show_rail,
+        PaletteAction::Settings => open_settings(app),
     }
     Ok(())
 }
@@ -342,6 +514,7 @@ async fn apply_prompt(
             app.log_lines
                 .retain(|line| line.to_lowercase().contains(&needle));
             app.log_search_query = value;
+            app.log_scroll = 0;
             app.mode = Mode::Overlay(OverlayKind::LogsDiff);
         }
     }
@@ -349,16 +522,32 @@ async fn apply_prompt(
 }
 
 async fn start_job(
-    app: &App,
+    app: &mut App,
     command: String,
     socket_path: &Path,
     tx: &mpsc::UnboundedSender<DaemonEvent>,
 ) -> Result<()> {
-    let cmd = shlex::split(&command).unwrap_or_else(|| vec![command.clone()]);
-    let args = RunArgs {
-        cmd,
+    let shell_syntax = command.contains(['|', '&', ';', '>', '<', '$']);
+    let mut cmd = shlex::split(&command).unwrap_or_else(|| vec![command.clone()]);
+    let resolved = if !shell_syntax && cmd.len() == 1 {
+        crate::commands::run::try_resolve_from_config(&cmd[0]).await
+    } else {
+        None
+    };
+    if let Some(config) = &resolved {
+        cmd.clone_from(&config.cmd);
+    }
+    if shell_syntax || (resolved.is_none() && cmd.len() == 1) {
+        cmd = vec!["sh".into(), "-c".into(), command];
+    }
+
+    let configured_pty = resolved
+        .as_ref()
+        .map_or(Some(app.settings.default_pty), |config| Some(config.pty));
+    let mut args = resolved.unwrap_or_else(|| RunArgs {
+        cmd: Vec::new(),
         name: None,
-        workspace: app.workspace_filter.clone(),
+        workspace: None,
         readiness: None,
         restart: None,
         max_retries: None,
@@ -368,13 +557,11 @@ async fn start_job(
         cpu_quota: None,
         pids_max: None,
         sandbox: false,
-        pty: true,
+        pty: app.settings.default_pty,
         max_runtime_ms: None,
         env: HashMap::new(),
         after: None,
-        cwd: std::env::current_dir()
-            .ok()
-            .map(|path| path.to_string_lossy().into_owned()),
+        cwd: None,
         pty_cols: None,
         pty_rows: None,
         max_rss_mb: None,
@@ -382,10 +569,30 @@ async fn start_job(
         health_check: None,
         health_interval_secs: None,
         health_threshold: None,
-    };
-    match rpc::<JobRecord>(socket_path, Command::Run(args)).await {
+    });
+    args.cmd = cmd;
+    args.workspace = app.workspace_filter.clone().or(args.workspace);
+    args.pty = crate::commands::run::resolve_pty(None, args.sandbox, configured_pty)?;
+    let configured_env = std::mem::take(&mut args.env);
+    let mut env = crate::commands::run::terminal_env();
+    for (key, value) in configured_env {
+        env.entry(key).or_insert(value);
+    }
+    args.env = env;
+    if args.cwd.is_none() {
+        args.cwd = std::env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned());
+    }
+
+    match rpc_autostart::<JobRecord>(socket_path, Command::Run(args)).await {
         Ok(Some(record)) => {
-            let _ = tx.send(DaemonEvent::Toast(format!("started {}", record.id)));
+            let name = record.name.clone().unwrap_or_else(|| record.id.clone());
+            if let Ok(jobs) = fetch_jobs(socket_path, app.workspace_filter.clone()).await {
+                let _ = tx.send(DaemonEvent::JobsUpdated(jobs));
+            }
+            app.set_selected(Some(record.id));
+            app.set_toast(format!("started {name}"));
         }
         Ok(None) => {}
         Err(err) => {
@@ -403,7 +610,7 @@ async fn restart_selected(
     let Some(id) = app.selected_id.clone() else {
         return;
     };
-    match rpc::<JobRecord>(
+    match rpc_autostart::<JobRecord>(
         socket_path,
         Command::Restart {
             id,
@@ -415,7 +622,7 @@ async fn restart_selected(
         Ok(Some(record)) => {
             let name = record.name.clone().unwrap_or_else(|| record.id.clone());
             app.set_selected(Some(record.id.clone()));
-            let _ = tx.send(DaemonEvent::Toast(format!("restarted {name}")));
+            app.set_toast(format!("restarted {name}"));
         }
         Ok(None) => {}
         Err(err) => {
@@ -428,7 +635,7 @@ async fn stop_selected(app: &App, socket_path: &Path, tx: &mpsc::UnboundedSender
     let Some(id) = app.selected_id.clone() else {
         return;
     };
-    match rpc::<serde_json::Value>(
+    match rpc_autostart::<serde_json::Value>(
         socket_path,
         Command::Stop {
             id,
@@ -450,7 +657,7 @@ async fn kill_selected(app: &App, socket_path: &Path, tx: &mpsc::UnboundedSender
     let Some(id) = app.selected_id.clone() else {
         return;
     };
-    match rpc::<serde_json::Value>(
+    match rpc_autostart::<serde_json::Value>(
         socket_path,
         Command::Kill(KillArgs {
             id: Some(id),
@@ -469,7 +676,7 @@ async fn kill_selected(app: &App, socket_path: &Path, tx: &mpsc::UnboundedSender
 }
 
 async fn clean_terminated(app: &App, socket_path: &Path, tx: &mpsc::UnboundedSender<DaemonEvent>) {
-    match rpc::<serde_json::Value>(
+    match rpc_autostart::<serde_json::Value>(
         socket_path,
         Command::Clean {
             workspace: app.workspace_filter.clone(),
@@ -497,7 +704,14 @@ async fn export_log(
     let Some(id) = app.selected_id.clone() else {
         return Ok(());
     };
-    match rpc::<serde_json::Value>(
+    let path = PathBuf::from(path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let path = path.to_string_lossy().into_owned();
+    match rpc_autostart::<serde_json::Value>(
         socket_path,
         Command::Export {
             id,
@@ -650,12 +864,146 @@ mod tests {
     }
 
     #[test]
-    fn palette_filters_by_subsequence() {
+    fn ctrl_p_non_q_clears_pending_and_flushes_0x10() {
+        let mut app = App::new();
+        app.mode = Mode::PtyType {
+            ctrl_p_pending: false,
+        };
+        assert_eq!(
+            pty_key_action(
+                &mut app,
+                key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                false
+            ),
+            Some(PtyKeyAction::Pending)
+        );
+        assert_eq!(
+            pty_key_action(&mut app, key(KeyCode::Char('a'), KeyModifiers::NONE), false),
+            Some(PtyKeyAction::Forward(vec![0x10, b'a']))
+        );
+        assert_eq!(
+            app.mode,
+            Mode::PtyType {
+                ctrl_p_pending: false
+            }
+        );
+        assert_eq!(
+            pty_key_action(&mut app, key(KeyCode::Char('b'), KeyModifiers::NONE), false),
+            Some(PtyKeyAction::Forward(vec![b'b']))
+        );
+    }
+
+    #[test]
+    fn ctrl_p_ctrl_q_exits_pty_type_mode() {
+        let mut app = App::new();
+        app.mode = Mode::PtyType {
+            ctrl_p_pending: false,
+        };
+        pty_key_action(
+            &mut app,
+            key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            false,
+        );
+        assert_eq!(
+            pty_key_action(
+                &mut app,
+                key(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                false
+            ),
+            Some(PtyKeyAction::Detach)
+        );
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn palette_filters_by_subsequence_and_includes_settings() {
         let mut app = App::new();
         let all = palette_actions(&app).len();
         app.palette_input = Input::new("kll".into());
         let filtered = palette_actions(&app);
         assert!(filtered.len() < all);
         assert!(filtered.contains(&("Kill job", PaletteAction::KillJob)));
+        assert!(palette_actions(&App::new()).contains(&("Settings", PaletteAction::Settings)));
+    }
+
+    #[tokio::test]
+    async fn settings_navigation_and_live_option_cycling() {
+        let mut app = App::new();
+        app.mode = Mode::Overlay(OverlayKind::Settings);
+        app.settings_state.select(Some(0));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let socket = Path::new("/tmp/bgrun-tui-test.sock");
+        handle_key(
+            &mut app,
+            key(KeyCode::Right, KeyModifiers::NONE),
+            None,
+            socket,
+            &tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.settings.theme, super::super::theme::ThemeKind::Dark);
+        handle_key(
+            &mut app,
+            key(KeyCode::Down, KeyModifiers::NONE),
+            None,
+            socket,
+            &tx,
+        )
+        .await
+        .unwrap();
+        handle_key(
+            &mut app,
+            key(KeyCode::Right, KeyModifiers::NONE),
+            None,
+            socket,
+            &tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            app.settings.chrome,
+            super::super::theme::ChromeStyle::Minimal
+        );
+        for _ in 0..2 {
+            handle_key(
+                &mut app,
+                key(KeyCode::Down, KeyModifiers::NONE),
+                None,
+                socket,
+                &tx,
+            )
+            .await
+            .unwrap();
+        }
+        handle_key(
+            &mut app,
+            key(KeyCode::Char(' '), KeyModifiers::NONE),
+            None,
+            socket,
+            &tx,
+        )
+        .await
+        .unwrap();
+        assert!(!app.settings.default_pty);
+
+        let path =
+            std::env::temp_dir().join(format!("bgrun-tui-close-{}.toml", uuid::Uuid::new_v4()));
+        handle_settings_key(&mut app, key(KeyCode::Esc, KeyModifiers::NONE), &path)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        let saved = super::super::settings::load_from_path(&path).await;
+        assert_eq!(saved, app.settings);
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[test]
+    fn list_selection_clamps_at_both_ends() {
+        let mut state = ListState::default();
+        move_list_selection(&mut state, -1, 3);
+        assert_eq!(state.selected(), Some(0));
+        move_list_selection(&mut state, 10, 3);
+        assert_eq!(state.selected(), Some(2));
     }
 }

@@ -796,7 +796,7 @@ printf '%s\n' \
 
 ## Interactive TUI
 
-Running `bgrun tui` (or `bgrun -i` / plain `bgrun`) opens a full-screen TUI:
+Running `bgrun tui` (or `bgrun -i`) opens a full-screen TUI:
 
 - **Job rail** — live list with state, PID and PTY/piped mode; `b` toggles the rail for a full-width terminal
 - **Embedded terminal** — live PTY output (buffered bytes replayed on attach) or replayed logs for piped/exited jobs, with ANSI colors and scrollback
@@ -804,8 +804,37 @@ Running `bgrun tui` (or `bgrun -i` / plain `bgrun`) opens a full-screen TUI:
 - **Shortcuts** — `Ctrl+K` / `:` command palette, `n` new job, `r` restart, `s` stop, `K` kill, `l` logs/diff, `c` clean terminated, `?` help, `q` quit
 - **Typing mode** — keystrokes go straight to the job's PTY; `Ctrl+P` then `Ctrl+Q` detaches
 - **Palette & overlays** — fuzzy command palette, prompts for new job/export path/workspace filter/log search, and digest/logs/inspect/help overlays
+- **Settings (`,`)** — live theme, chrome, sidebar width, default I/O, mouse, cursor, and polling controls; preferences persist across launches
+- **Mouse** — click or scroll the job rail, scroll stage scrollback in VIEW mode, and scroll the logs overlay
 
 Quitting the TUI does not stop the daemon or any jobs.
+
+### TUI settings
+
+Settings are stored in `~/.config/bgrun/tui.toml` (or the platform config directory). Missing or invalid files fall back to defaults.
+
+```toml
+theme = "terminal"          # see theme catalog below
+chrome = "rounded"          # rounded | minimal | borderless
+sidebar_width = 28          # 24 | 28 | 34
+default_pty = true
+mouse = true
+view_cursor = "hidden"      # hidden | dim
+poll_ms = 1000              # 500 | 1000 | 2000
+```
+
+The default `terminal` theme inherits the terminal's foreground, background, and transparency instead of painting an opaque surface.
+
+### Theme catalog
+
+Theme names are the values accepted by `theme` in `tui.toml`:
+
+- **Core:** `terminal`, `dark`, `high-contrast`
+- **Catppuccin:** `catppuccin-mocha` (also accepts `catppuccin`), `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte`
+- **Dark favorites:** `dracula`, `tokyo-night`, `nord`, `gruvbox-dark`, `solarized-dark`, `rose-pine`, `rose-pine-moon`, `one-dark`, `github-dark`, `monokai`, `material-dark`, `ayu-dark`, `ayu-mirage`, `kanagawa`, `everforest`, `oxocarbon`, `poimandres`, `night-fox`, `synthwave-84`
+- **Light themes:** `gruvbox-light`, `solarized-light`, `rose-pine-dawn`, `github-light`
+
+Every opaque palette defines semantic accent, success, warning, error, border, muted-text, popup, and selection colors. The palette tests enforce readable foreground, popup, muted-text, accent, status, and selection contrast.
 
 ---
 

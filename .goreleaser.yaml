@@ -38,6 +38,8 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
+      - src: docs/preview.png
+        dst: docs/preview.png
       - src: docs/man/bgrun-daemon.1
         dst: docs/man/bgrun-daemon.1
 
@@ -56,8 +58,6 @@ homebrew_casks:
     homepage: "https://github.com/bethropolis/bgrun"
     description: "Background process manager for development workflows"
     license: "MIT"
-    url:
-      verified: "github.com/bethropolis/bgrun"
     commit_msg_template: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
 
 aurs:
@@ -117,6 +117,8 @@ nfpms:
     contents:
       - src: README.md
         dst: /usr/share/doc/bgrun/README.md
+      - src: docs/preview.png
+        dst: /usr/share/doc/bgrun/docs/preview.png
       - src: docs/man/bgrun-daemon.1
         dst: /usr/share/man/man1/bgrun-daemon.1
       - src: packaging/completions/bgrun.bash

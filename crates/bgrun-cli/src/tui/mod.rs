@@ -2,13 +2,18 @@
 
 mod daemon;
 mod keys;
+mod settings;
 mod state;
+mod theme;
 mod ui;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream,
+};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
@@ -20,20 +25,31 @@ pub async fn run() -> Result<()> {
     let socket_path = bgrun_proto::paths::socket_path();
     crate::autostart::ensure_daemon_running(&socket_path).await?;
 
+    let settings = settings::load().await;
+    let mouse_enabled = settings.mouse;
     let mut terminal = ratatui::init();
+    if mouse_enabled {
+        // Mouse capture is optional; Settings can retry if the terminal rejects it.
+        let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+    }
     let paste_enabled = crossterm::execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
 
-    let result = run_loop(&mut terminal, socket_path).await;
+    let result = run_loop(&mut terminal, socket_path, settings).await;
 
     if paste_enabled {
         let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     }
+    let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
 
-async fn run_loop(terminal: &mut ratatui::DefaultTerminal, socket_path: PathBuf) -> Result<()> {
-    let mut app = App::new();
+async fn run_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    socket_path: PathBuf,
+    settings: settings::TuiSettings,
+) -> Result<()> {
+    let mut app = App::with_settings(settings);
     let mut events = EventStream::new();
     let (tx, mut rx) = mpsc::unbounded_channel::<DaemonEvent>();
 
@@ -60,8 +76,14 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, socket_path: PathBuf)
                     }
                 }
                 // The next draw updates the canvas size and triggers ResizePty.
+                Some(Ok(Event::Mouse(mouse))) if app.settings.mouse => {
+                    keys::handle_mouse(&mut app, mouse);
+                }
                 Some(Ok(
-                    Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Mouse(_),
+                    Event::Resize(_, _)
+                    | Event::FocusGained
+                    | Event::FocusLost
+                    | Event::Mouse(_),
                 )) => {}
                 Some(Err(err)) => {
                     app.apply_daemon_event(DaemonEvent::Error(err.to_string()));
@@ -75,6 +97,7 @@ async fn run_loop(terminal: &mut ratatui::DefaultTerminal, socket_path: PathBuf)
             break;
         }
 
+        app.expire_toast();
         daemon::sync_active_stream(&mut app, &mut active_stream, &socket_path, &tx).await;
         terminal.draw(|frame| ui::render(frame, &mut app))?;
         daemon::sync_pty_size(&app, &mut active_stream, &socket_path);

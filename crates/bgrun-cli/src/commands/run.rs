@@ -60,6 +60,15 @@ fn parse_env_list(entries: &[String]) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
+/// Collects terminal and locale variables inherited by newly spawned jobs.
+pub(crate) fn terminal_env() -> HashMap<String, String> {
+    std::env::vars()
+        .filter(|(key, _)| {
+            key == "TERM" || key == "COLORTERM" || key == "LANG" || key.starts_with("LC_")
+        })
+        .collect()
+}
+
 /// Runs a command in the background via the daemon.
 pub async fn run(
     mut cmd: Vec<String>,
@@ -142,12 +151,7 @@ pub async fn run(
 
     // Collect terminal and locale env vars to prevent TUI rendering corruption,
     // then overlay explicit --env entries (explicit wins).
-    let mut env = HashMap::new();
-    for (key, val) in std::env::vars() {
-        if key == "TERM" || key == "COLORTERM" || key == "LANG" || key.starts_with("LC_") {
-            env.insert(key, val);
-        }
-    }
+    let mut env = terminal_env();
     env.extend(parse_env_list(&flags.env)?);
     // Config-defined env applies after the terminal defaults; explicit
     // --env entries (applied below) always win.
@@ -377,7 +381,11 @@ fn print_wait_result(job_id: &str, result: &bgrun_proto::WaitResult, json: bool)
 
 /// Resolves the effective PTY mode. Explicit flags win; sandbox always selects
 /// piped mode; otherwise `bgrun.toml` decides, defaulting to PTY.
-fn resolve_pty(explicit: Option<bool>, sandbox: bool, configured: Option<bool>) -> Result<bool> {
+pub(crate) fn resolve_pty(
+    explicit: Option<bool>,
+    sandbox: bool,
+    configured: Option<bool>,
+) -> Result<bool> {
     match explicit {
         Some(true) if sandbox => {
             anyhow::bail!("--sandbox requires piped mode and cannot be combined with --pty")
@@ -389,7 +397,7 @@ fn resolve_pty(explicit: Option<bool>, sandbox: bool, configured: Option<bool>) 
 }
 
 /// Tries to find and parse a bgrun.toml, returning resolved `RunArgs` if the name matches.
-async fn try_resolve_from_config(name: &str) -> Option<bgrun_proto::RunArgs> {
+pub(crate) async fn try_resolve_from_config(name: &str) -> Option<bgrun_proto::RunArgs> {
     let config_path = find_config(std::env::current_dir().ok()?).await?;
     let content = tokio::fs::read_to_string(&config_path).await.ok()?;
     let toml_str = content.as_str();

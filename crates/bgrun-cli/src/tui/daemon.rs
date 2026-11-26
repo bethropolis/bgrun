@@ -25,6 +25,7 @@ pub enum DaemonEvent {
     PtyClosed { id: String },
     DigestLoaded(bgrun_proto::LogDigest),
     LogsLoaded(Vec<String>),
+    DaemonIdle,
     Toast(String),
     Error(String),
 }
@@ -76,6 +77,15 @@ pub async fn rpc<T: DeserializeOwned>(socket_path: &Path, command: Command) -> R
     Ok(response.data)
 }
 
+/// Sends one user-initiated command, starting the daemon first if it idled out.
+pub async fn rpc_autostart<T: DeserializeOwned>(
+    socket_path: &Path,
+    command: Command,
+) -> Result<Option<T>> {
+    crate::autostart::ensure_daemon_running(socket_path).await?;
+    rpc(socket_path, command).await
+}
+
 /// Fetches jobs in the same order as `bgrun list`.
 pub async fn fetch_jobs(socket_path: &Path, workspace: Option<String>) -> Result<Vec<JobRecord>> {
     let mut jobs = rpc::<Vec<JobRecord>>(socket_path, Command::List { workspace })
@@ -85,28 +95,33 @@ pub async fn fetch_jobs(socket_path: &Path, workspace: Option<String>) -> Result
     Ok(jobs)
 }
 
-/// Polls the job list once per second; also refreshes stats for the selection.
+/// Polls the job list at the configured interval; also refreshes stats for the
+/// selection. A missing daemon is expected after idle shutdown and never causes
+/// this passive task to autostart it.
 pub fn spawn_poller(
     socket_path: PathBuf,
     tx: mpsc::UnboundedSender<DaemonEvent>,
     ctl: Arc<Mutex<PollCtl>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(1));
+        let initial_ms = ctl.lock().unwrap_or_else(PoisonError::into_inner).poll_ms;
+        let mut ticker = interval(Duration::from_millis(initial_ms));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            let (workspace, selected) = {
+            let (workspace, selected, poll_ms) = {
                 let ctl = ctl.lock().unwrap_or_else(PoisonError::into_inner);
-                (ctl.workspace.clone(), ctl.selected.clone())
+                (ctl.workspace.clone(), ctl.selected.clone(), ctl.poll_ms)
             };
+            let poll_duration = Duration::from_millis(poll_ms);
+            if ticker.period() != poll_duration {
+                ticker = interval(poll_duration);
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            }
             if let Ok(jobs) = fetch_jobs(&socket_path, workspace).await {
                 let _ = tx.send(DaemonEvent::JobsUpdated(jobs));
             } else {
-                // The daemon may have idle-shutdown; don't kill the TUI.
-                let _ = tx.send(DaemonEvent::Toast(
-                    "daemon idle — press n or r to restart it".into(),
-                ));
+                let _ = tx.send(DaemonEvent::DaemonIdle);
                 continue;
             }
             if let Some(id) = selected
@@ -156,7 +171,7 @@ pub async fn sync_active_stream(
     app.scroll_offset = 0;
 
     let result = match kind {
-        StreamKind::Pty => spawn_pty_stream(socket_path, id.clone(), tx.clone(), size).await,
+        StreamKind::Pty => spawn_pty_stream(socket_path, id.clone(), tx.clone()).await,
         StreamKind::Logs => {
             spawn_log_stream(socket_path, id.clone(), alive, tx.clone(), size).await
         }
@@ -174,7 +189,6 @@ async fn spawn_pty_stream(
     socket_path: &Path,
     id: String,
     tx: mpsc::UnboundedSender<DaemonEvent>,
-    size: (u16, u16),
 ) -> Result<ActiveStream> {
     let stream = UnixStream::connect(socket_path).await?;
     let request = Request {
@@ -257,7 +271,8 @@ async fn spawn_pty_stream(
         stdin_tx: Some(stdin_tx),
         read_task,
         write_task: Some(write_task),
-        last_size: size,
+        // The first render must synchronize the daemon PTY to the real stage.
+        last_size: (0, 0),
     })
 }
 

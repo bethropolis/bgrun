@@ -47,7 +47,9 @@ bgrun kill dev-server
 ```
 
 ### 3. Interactive TUI
-Prefer a full-screen view over typing commands? Launch the TUI with `bgrun tui` (or `bgrun -i` / plain `bgrun`). It shows a live job rail and an embedded terminal, lets you type straight into any live PTY, and exposes a `Ctrl+K` command palette. Quitting the TUI leaves the daemon and jobs running.
+Prefer a full-screen view over typing commands? Launch the TUI with `bgrun tui` or `bgrun -i`. It shows a live job rail and an embedded terminal, lets you type straight into any live PTY, and exposes a `Ctrl+K` command palette. Press `,` to choose from 30 built-in themes (including Catppuccin, Dracula, Tokyo Night, Nord, Gruvbox, Solarized, and Rosé Pine), change the layout, rail width, mouse support, and polling interval with a live preview; preferences persist in `~/.config/bgrun/tui.toml`. Quitting the TUI leaves the daemon and jobs running.
+
+![bgrun interactive TUI](docs/preview.png)
 
 ---
 

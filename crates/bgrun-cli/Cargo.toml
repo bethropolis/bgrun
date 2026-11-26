@@ -34,3 +34,5 @@ ratatui = { workspace = true }
 tui-term = { workspace = true }
 tui-input = { workspace = true }
 tokio-util = { workspace = true }
+directories = { workspace = true }
+toml = { workspace = true }

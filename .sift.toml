@@ -1,0 +1,82 @@
+# Repository-local defaults for coding-agent context dumps.
+# Usage: sift dump .
+# Root guidance only: sift dump . --target guidance
+
+[sift]
+style = "xml"
+output = "codebase.xml"
+budget = 150000
+compress_mode = "full"
+fallback_mode = "signatures"
+fallback_threshold = 0.9
+smart_filter = false
+ignore_hidden = false
+ignore_git = true
+secret_scan = true
+ignore = [
+  # Generated context documents, including this config's outputs.
+  "/codebase.xml",
+  "/codebase.signatures.xml",
+  "/codebase.md",
+  "/codebase.md.xml",
+  "/guidance-context.xml",
+
+  # Sift treats lib/ as vendored by default; this directory is plugin source.
+  "!plugins/opencode/lib/",
+  "!plugins/opencode/lib/**",
+  # Text SVG, useful when dumping with --binary to include lockfiles as well.
+  "!docs/architecture.svg",
+
+  # Keep only repository-root README.md and AGENTS.md as Markdown context.
+  "**/*.md",
+  "!/README.md",
+  "!/AGENTS.md",
+]
+prompt = """
+bgrun is a Linux-first Rust background-process runner for development and AI-agent
+workflows. The workspace has four crates: bgrun-proto defines the serde/schemars
+NDJSON contract; bgrun-core contains pure job, configuration, and store logic;
+bgrun-cli provides the clap entry point, Unix-socket client, autostart, and MCP
+adapter; bgrun-daemon owns the tokio server, process and PTY lifecycle, readiness
+and health checks, logging, persistence, orphan adoption, and Linux isolation.
+
+Trace a CLI or MCP request from its command arguments through bgrun_proto::Command,
+the daemon dispatcher, JobStore, and runner, then into persisted job state and log
+files. The OpenCode integration starts at plugins/opencode/index.ts and flows through
+lib/tools.ts, exec.ts, shaping.ts, and notify.ts before invoking the bgrun CLI.
+Preserve wire compatibility, session-notification exactly-once behavior, tracking
+ordering around kill/stop/restart, unflushed PTY output handling, and platform
+constraints. Inline Rust tests, crates/bgrun-core/tests, and plugins/opencode/tests
+are behavioral evidence. Use .github/workflows and .goreleaser.yaml for build and
+release behavior. Distinguish verified behavior from inference and call out missing
+evidence rather than assuming documentation matches current code.
+"""
+
+# Fast architectural orientation when full implementation detail is unnecessary.
+[profiles.signatures]
+style = "xml"
+output = "codebase.signatures.xml"
+budget = 100000
+compress_mode = "signatures"
+prompt = """
+Summarize bgrun's architecture from the included signatures: crate boundaries,
+CLI/MCP-to-daemon request flow, job lifecycle and persistence, PTY/log behavior,
+and the OpenCode plugin's tool and notification flow. Identify important public
+contracts and tests. Do not invent implementation details that signatures omit.
+"""
+
+# Only README.md and AGENTS.md (when present) survive the root Markdown allowlist.
+[[targets]]
+name = "guidance"
+output = "guidance-context.xml"
+style = "xml"
+extensions = ["md"]
+budget = 12000
+compress_mode = "full"
+prompt = """
+Summarize only the included repository-root README.md and AGENTS.md, if present.
+Extract project purpose, installation, quick start, command surface, architecture,
+plugin distribution, and documented development or test conventions. Preserve the
+documents' terminology and separate explicit statements from inference. Nested
+Markdown documentation is excluded; do not imply it was read.
+"""

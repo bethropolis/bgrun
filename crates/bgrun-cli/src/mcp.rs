@@ -430,8 +430,9 @@ pub fn tool_registry() -> Vec<McpTool> {
             "Start a background job and return its record. `cmd` is the command \
              vector (see schema for the optional fields). Set `wait: true` to \
              block until the job is ready in the same call instead of calling \
-             `wait` separately. For interactive programs set `pty: true`, then \
-             drive them with the `send`/`screen`/`expect` tools.",
+             `wait` separately. Jobs use a PTY by default; set `pty: false` for \
+             piped stdout/stderr. Drive interactive jobs with the \
+             `send`/`screen`/`expect` tools.",
             run_schema(),
         ),
         tool(
@@ -545,8 +546,8 @@ pub fn tool_registry() -> Vec<McpTool> {
         ),
         tool(
             "send",
-            "Drive an interactive job's stdin: start it with `pty: true`, then send input \
-             here. End `data` with \"\\n\" for Enter. Control keys are raw bytes: Esc is \
+            "Drive an interactive job's stdin, then send input here. Jobs use a PTY by \
+             default; set `pty: false` to opt out. End `data` with \"\\n\" for Enter. Control keys are raw bytes: Esc is \
              \"\\u001b\", Up/Down/Left/Right are \"\\u001b[A/B/C/D\", Tab is \"\\t\", \
              Ctrl+C is \"\\u0003\", Ctrl+D is \"\\u0004\". Read the result with `screen` \
              (or `expect` to block until a prompt appears).",
@@ -666,6 +667,13 @@ fn run_schema() -> Value {
         }
     }
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        if let Some(pty) = properties.get_mut("pty").and_then(Value::as_object_mut) {
+            pty.insert(
+                "description".to_string(),
+                json!("Allocate a pseudo-terminal (default true; set false for piped stdout/stderr; sandbox forces false)."),
+            );
+            pty.insert("default".to_string(), json!(true));
+        }
         properties.insert(
             "wait".to_string(),
             json!({ "type": "boolean", "description": "Wait until the job is ready before returning (default false)." }),
@@ -687,8 +695,13 @@ fn run_schema() -> Value {
 fn build_command(name: &str, arguments: &Value) -> std::result::Result<Command, String> {
     match name {
         "run" => {
-            let args: RunArgs = serde_json::from_value(arguments.clone())
+            let mut args: RunArgs = serde_json::from_value(arguments.clone())
                 .map_err(|error| format!("invalid arguments for run: {error}"))?;
+            if arguments.get("pty").is_none() {
+                args.pty = !args.sandbox;
+            } else if args.pty && args.sandbox {
+                return Err("run: pty cannot be true when sandbox is true".to_string());
+            }
             Ok(Command::Run(args))
         }
         "list" => Ok(Command::List {
@@ -884,6 +897,27 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[test]
+    fn run_defaults_to_pty_unless_sandboxed() {
+        let command = build_command("run", &json!({ "cmd": ["python3", "-i"] })).unwrap();
+        assert!(matches!(command, Command::Run(args) if args.pty));
+
+        let command =
+            build_command("run", &json!({ "cmd": ["python3", "-i"], "sandbox": true })).unwrap();
+        assert!(matches!(command, Command::Run(args) if args.sandbox && !args.pty));
+
+        let command =
+            build_command("run", &json!({ "cmd": ["python3", "-i"], "pty": false })).unwrap();
+        assert!(matches!(command, Command::Run(args) if !args.pty));
+
+        let error = build_command(
+            "run",
+            &json!({ "cmd": ["python3", "-i"], "sandbox": true, "pty": true }),
+        )
+        .unwrap_err();
+        assert!(error.contains("pty"));
     }
 
     #[test]
@@ -1103,12 +1137,12 @@ mod tests {
     }
 
     #[test]
-    fn build_command_run_accepts_job_name_resolution_input() {
-        // Single-word cmd values resolve against bgrun.toml jobs; the MCP
-        // mapper must pass them through untouched. Partial payloads are fine
-        // thanks to the serde defaults on RunArgs.
+    fn build_command_run_accepts_partial_payload_and_defaults_to_pty() {
+        // MCP passes cmd through to the daemon; it does not resolve bgrun.toml.
+        // Partial payloads use RunArgs defaults, with PTY enabled unless sandboxed.
         let command = build_command("run", &json!({ "cmd": ["dev"] })).unwrap();
-        let expected: RunArgs = serde_json::from_value(json!({ "cmd": ["dev"] })).unwrap();
+        let expected: RunArgs =
+            serde_json::from_value(json!({ "cmd": ["dev"], "pty": true })).unwrap();
         assert_eq!(command, Command::Run(expected));
     }
 
